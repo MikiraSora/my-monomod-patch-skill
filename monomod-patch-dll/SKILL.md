@@ -14,6 +14,10 @@ description: Build MonoMod.Patcher ahead-of-time .mm.dll patch projects for .NET
 
 Use this skill for MonoMod.Patcher `.mm.dll` projects, not runtime `Hook`, `ILHook`, or `MMHOOK_*.dll` mods unless the user explicitly asks to compare them.
 
+### From a git diff (two commits)
+
+If the user provides a **project git repository + two commits** (`base..head`) and wants the source changes between them reproduced as a patch on an already-compiled target assembly, follow `references/git-diff-workflow.md` instead of starting from scratch. That workflow classifies each diff hunk, maps it to a patch pattern, refuses signature changes (hard limit), and pauses on middle-of-method insertions for the user to choose between IL insertion and copy-whole-body. The steps below still apply as the build/apply/verify tail of that workflow.
+
 1. Inspect the target assembly before writing patch code.
    - Determine the assembly name, target framework, namespace/type names, method signatures, virtual/override status, constructors, and dependencies.
    - Prefer structured inspection with reflection, `dotnet`, ILSpy/dnlib/Mono.Cecil, or existing project sources when available.
