@@ -1,9 +1,14 @@
 ---
 name: monomod-patch-dll
-description: Build MonoMod.Patcher ahead-of-time .mm.dll patch projects for .NET assemblies. Use when Codex needs to create, edit, or test projects named like Target.PatchName.mm.dll that MonoMod applies to Target.dll/Target.exe to produce a patched assembly, especially when using patch_ classes, MonoModPatch, MonoModIgnore, MonoModConstructor, and orig_ methods.
+description: Build MonoMod.Patcher ahead-of-time .mm.dll patch projects for .NET assemblies. Use when the agent needs to create, edit, or test projects named like Target.PatchName.mm.dll that MonoMod applies to Target.dll/Target.exe to produce a patched assembly, especially when using patch_ classes, MonoModPatch, MonoModIgnore, MonoModConstructor, and orig_ methods.
 ---
 
 # MonoMod Patch DLL
+
+> This skill is agent-agnostic and works in both Claude Code and Codex.
+> - **Claude Code**: `SKILL.md` (this file) is the skill definition; it is discovered by the frontmatter `name`/`description`.
+> - **Codex**: register the agent via `agents/openai.yaml` alongside this `SKILL.md`; the `openai.yaml` file is ignored by Claude Code.
+> The instructions in this file and in `references/` are identical for both agents.
 
 ## Workflow
 
@@ -21,9 +26,10 @@ Use this skill for MonoMod.Patcher `.mm.dll` projects, not runtime `Hook`, `ILHo
    - Declare `extern orig_MethodName(...)` only when the patch needs to call the original implementation.
 5. Support `[MonoModConstructor]` for `.ctor` or `.cctor` patches.
 6. Use `[MonoModIgnore]` for helper members/types that must compile into the patch assembly but not be copied or patched into the target.
-7. Build, stage, apply, and verify the patch behavior. Prefer an explicit output path, for example `Target_modded.dll`, instead of relying on `MONOMODDED_Target.dll`.
+7. If the patch must insert code **between** two existing instructions inside a method body (not just wrap the whole method), the `orig_` wrapper is structurally insufficient. Use `MonoModRules` + `PostProcessor` + Cecil `ILProcessor` instead. Read `references/modifier-recipes.md` section "Precise IL Insertion" before implementing. The rules class must use a **static** constructor (`static MonoModRules()`), not an instance constructor.
+8. Build, stage, apply, and verify the patch behavior. Prefer an explicit output path, for example `Target_modded.dll`, instead of relying on `MONOMODDED_Target.dll`.
 
-Read `references/patcher-patterns.md` before implementing a patch project. Read `references/modifier-recipes.md` only when the user asks for modifiers beyond `MonoModPatch`, `MonoModIgnore`, and `MonoModConstructor`.
+Read `references/patcher-patterns.md` before implementing a patch project. Read `references/modifier-recipes.md` when the user asks for modifiers beyond `MonoModPatch`, `MonoModIgnore`, and `MonoModConstructor`, OR when the patch requires inserting code between existing instructions inside a method body (see the "Precise IL Insertion" section, verified across 41 scenarios S200-S250).
 
 Do not call `[MonoModIgnore]` helpers from patched method bodies. Ignored helpers are not copied into the target assembly, so patched IL that calls them will fail at runtime unless the call is relinked elsewhere.
 
