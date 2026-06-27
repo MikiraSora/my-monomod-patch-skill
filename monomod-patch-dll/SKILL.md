@@ -1,0 +1,122 @@
+---
+name: monomod-patch-dll
+description: Build MonoMod.Patcher ahead-of-time .mm.dll patch projects for .NET assemblies. Use when Codex needs to create, edit, or test projects named like Target.PatchName.mm.dll that MonoMod applies to Target.dll/Target.exe to produce a patched assembly, especially when using patch_ classes, MonoModPatch, MonoModIgnore, MonoModConstructor, and orig_ methods.
+---
+
+# MonoMod Patch DLL
+
+## Workflow
+
+Use this skill for MonoMod.Patcher `.mm.dll` projects, not runtime `Hook`, `ILHook`, or `MMHOOK_*.dll` mods unless the user explicitly asks to compare them.
+
+1. Inspect the target assembly before writing patch code.
+   - Determine the assembly name, target framework, namespace/type names, method signatures, virtual/override status, constructors, and dependencies.
+   - Prefer structured inspection with reflection, `dotnet`, ILSpy/dnlib/Mono.Cecil, or existing project sources when available.
+2. Create a class library whose output assembly name ends with `.mm`, usually `TargetAssembly.PatchName.mm`.
+3. Reference the target assembly and MonoMod.Patcher, but do not copy or redistribute target binaries from the patch project output.
+4. Write patch classes using the normal path first:
+   - Put `patch_TypeName` in the target type namespace when possible.
+   - Use `[MonoModPatch("global::Namespace.TypeName")]` when the patch type cannot follow the `patch_` naming/namespace convention.
+   - Inherit from the target type when visible members need to be reused.
+   - Declare `extern orig_MethodName(...)` only when the patch needs to call the original implementation.
+5. Support `[MonoModConstructor]` for `.ctor` or `.cctor` patches.
+6. Use `[MonoModIgnore]` for helper members/types that must compile into the patch assembly but not be copied or patched into the target.
+7. Build, stage, apply, and verify the patch behavior. Prefer an explicit output path, for example `Target_modded.dll`, instead of relying on `MONOMODDED_Target.dll`.
+
+Read `references/patcher-patterns.md` before implementing a patch project. Read `references/modifier-recipes.md` only when the user asks for modifiers beyond `MonoModPatch`, `MonoModIgnore`, and `MonoModConstructor`.
+
+Do not call `[MonoModIgnore]` helpers from patched method bodies. Ignored helpers are not copied into the target assembly, so patched IL that calls them will fail at runtime unless the call is relinked elsewhere.
+
+## Required Patterns
+
+Basic method wrapper:
+
+```csharp
+#pragma warning disable CS0626
+
+namespace TargetNamespace;
+
+internal class patch_TargetType : TargetType
+{
+    public extern string orig_FormatName(string name);
+
+    public string FormatName(string name)
+    {
+        return "[patched] " + orig_FormatName(name).ToUpperInvariant();
+    }
+}
+```
+
+Explicit target type:
+
+```csharp
+using MonoMod;
+
+[MonoModPatch("global::TargetNamespace.TargetType")]
+internal class PatchTargetType : TargetNamespace.TargetType
+{
+}
+```
+
+Constructor patch:
+
+```csharp
+#pragma warning disable CS0626
+using MonoMod;
+
+namespace TargetNamespace;
+
+internal class patch_TargetType : TargetType
+{
+    public extern void orig_ctor(string value);
+
+    [MonoModConstructor]
+    public void ctor(string value)
+    {
+        orig_ctor(value);
+        Marker = "constructed by patch";
+    }
+}
+```
+
+For the tested current pattern, use a normal method named `ctor` with `[MonoModConstructor]`; its original stub is `orig_ctor`. If this fails against a different MonoMod version or a real C# constructor pattern, inspect MonoMod's constructor handling and the patched IL before guessing a different stub name.
+
+## Project Guidance
+
+Use a patch project shape like this, adapted to the target TFM:
+
+```xml
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <AssemblyName>TargetAssembly.PatchName.mm</AssemblyName>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+    <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Reference Include="TargetAssembly">
+      <HintPath>..\path\to\TargetAssembly.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <PackageReference Include="MonoMod.Patcher" Version="25.0.1" PrivateAssets="all" />
+  </ItemGroup>
+</Project>
+```
+
+Match the target assembly framework when practical. For Unity/old .NET Framework targets, prefer the target's framework profile over modern `net8.0`.
+
+## Verification
+
+A reliable verification loop is:
+
+1. Build the target and patch project.
+2. Copy the target assembly, patch `.mm.dll`, and required dependencies to a staging directory.
+3. Apply MonoMod.Patcher:
+   - Default CLI style: `MonoMod.Patcher.dll Target.dll`
+   - Explicit output style: `MonoMod.Patcher.dll Target.dll Target.PatchName.mm.dll Target_modded.dll`
+   - In-process harness style: instantiate `MonoMod.MonoModder`, call `Read`, `ReadMod`, `MapDependencies`, `AutoPatch`, and `Write`.
+4. Assert the patched assembly exists and contains `MonoMod.WasHere`.
+5. Execute or reflect over the patched assembly to prove behavior changed.
+
+Keep tests on local toy assemblies unless the user provides a legal target and asks to patch it.

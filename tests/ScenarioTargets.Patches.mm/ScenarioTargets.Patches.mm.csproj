@@ -1,0 +1,15 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AssemblyName>MonoModTestTargets.Patches.mm</AssemblyName>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\ScenarioTargets\ScenarioTargets.csproj">
+      <Private>false</Private>
+    </ProjectReference>
+    <PackageReference Include="MonoMod.Patcher" Version="25.0.1" PrivateAssets="all" />
+  </ItemGroup>
+</Project>

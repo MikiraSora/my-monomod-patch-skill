@@ -1,0 +1,4 @@
+interface:
+  display_name: "MonoMod Patch DLL"
+  short_description: "Build MonoMod.Patcher .mm.dll patch projects."
+  default_prompt: "Use $monomod-patch-dll to createa  MonoMod.Patcher .mm.dll project for a target assembly."

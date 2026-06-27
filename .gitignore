@@ -1,0 +1,28 @@
+# ===== 参考资料（下载的 NuGet 包 / MonoMod 源码，非本项目源码）=====
+.research/
+
+# ===== .NET 构建产物 =====
+**/bin/
+**/obj/
+**/artifacts/
+
+# ===== 测试 / 示例运行产物 =====
+tests/artifacts/
+examples/MonoModPatchDllExample/artifacts/
+
+# ===== IDE / 编辑器 =====
+.vs/
+.idea/
+.vscode/
+*.user
+*.suo
+*.userprefs
+
+# ===== 临时 / 系统文件 =====
+*.log
+*.tmp
+*.bak
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+.DS_Store

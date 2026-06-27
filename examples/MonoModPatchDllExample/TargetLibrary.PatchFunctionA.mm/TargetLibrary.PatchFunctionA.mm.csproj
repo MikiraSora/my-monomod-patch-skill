@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <AssemblyName>TargetLibrary.PatchFunctionA.mm</AssemblyName>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\TargetLibrary\TargetLibrary.csproj" PrivateAssets="all" ReferenceOutputAssembly="true" OutputItemType="Reference">
+      <Private>false</Private>
+    </ProjectReference>
+    <PackageReference Include="MonoMod.Patcher" Version="25.0.1" PrivateAssets="all" />
+  </ItemGroup>
+</Project>

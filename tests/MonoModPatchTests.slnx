@@ -1,0 +1,6 @@
+<Solution>
+  <Project Path="ScenarioTargets.Patches.mm/ScenarioTargets.Patches.mm.csproj" />
+  <Project Path="ScenarioTargets/ScenarioTargets.csproj" />
+  <Project Path="TestHarness/TestHarness.csproj" />
+  <Project Path="HelperLib/HelperLib.csproj" />
+</Solution>
