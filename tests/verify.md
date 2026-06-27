@@ -4609,8 +4609,206 @@ internal class patch_S126_AddNewEvent : S126_AddNewEvent
 }
 ```
 
+## S200 MiddleInsertVoidCall
+
+**需求**: 用 MonoModRules + PostProcessor 在 Run() 中 First() 与 Third() 之间插入 Second() (void 调用)
+
+**期望**: Run() 后 Log == "123"
+
+**实际**: 123
+
+**结果**: PASS
+
+### 原始目标代码
+```csharp
+using System.Text;
+
+namespace MonoModTestTargets;
+
+public class S200_MiddleInsertVoidCall
+{
+    public StringBuilder Log { get; } = new();
+
+    public void First() => Log.Append("1");
+    public void Third() => Log.Append("3");
+
+    public void Run()
+    {
+        First();
+        Third();
+    }
+}
+```
+
+### Patch 代码
+```csharp
+#pragma warning disable CS0626
+
+using System.Text;
+
+namespace MonoModTestTargets;
+
+internal class patch_S200_MiddleInsertVoidCall : S200_MiddleInsertVoidCall
+{
+    // New method added by patch. MonoModRules PostProcessor inserts a call to this
+    // between First() and Third() in Run().
+    public void Second() => Log.Append("2");
+}
+```
+
+## S201 MiddleInsertAfterNonVoidReturn
+
+**需求**: 在 Process() 中 Compute() (返回 int 存入局部变量) 之后, Done() 之前插入 LogComputed()
+
+**期望**: Process() 后 Recorded == 42, Value == 142
+
+**实际**: recorded=42; value=142
+
+**结果**: PASS
+
+### 原始目标代码
+```csharp
+namespace MonoModTestTargets;
+
+public class S201_MiddleInsertWithReturn
+{
+    public int Value { get; set; }
+    public int Recorded { get; set; }
+
+    public int Compute()
+    {
+        Value = 42;
+        return Value;
+    }
+
+    public void Done() => Value += 100;
+
+    public void Process()
+    {
+        int r = Compute();
+        Done();
+    }
+}
+```
+
+### Patch 代码
+```csharp
+#pragma warning disable CS0626
+
+namespace MonoModTestTargets;
+
+internal class patch_S201_MiddleInsertWithReturn : S201_MiddleInsertWithReturn
+{
+    // New method added by patch. MonoModRules PostProcessor inserts a call to this
+    // after Compute() (and its stloc) and before Done() in Process().
+    public void LogComputed() => Recorded = Value;
+}
+```
+
+## S202 MiddleInsertWithMarker
+
+**需求**: 在 Step() 中 Begin() 与 End() 之间插入 Middle(), 验证标记方法 __PatchMarker 存在且方法上有 PatchInsertMarkerAttribute
+
+**期望**: Step() 后 Log == "BME", __PatchMarker 方法存在, Step 方法有 PatchInsertMarkerAttribute
+
+**实际**: log=BME; marker=present; attr=present
+
+**结果**: PASS
+
+### 原始目标代码
+```csharp
+using System.Text;
+
+namespace MonoModTestTargets;
+
+public class S202_MiddleInsertMarker
+{
+    public StringBuilder Log { get; } = new();
+
+    public void Begin() => Log.Append("B");
+    public void End() => Log.Append("E");
+
+    public void Step()
+    {
+        Begin();
+        End();
+    }
+}
+```
+
+### Patch 代码
+```csharp
+#pragma warning disable CS0626
+
+using System.Text;
+
+namespace MonoModTestTargets;
+
+internal class patch_S202_MiddleInsertMarker : S202_MiddleInsertMarker
+{
+    // New method added by patch. MonoModRules PostProcessor inserts a call to this
+    // between Begin() and End() in Step(), with dnSpy-visible markers.
+    public void Middle() => Log.Append("M");
+}
+```
+
+## S203 MiddleInsertInTryBlock
+
+**需求**: 在 SafeRun() 的 try 块中 A() 与 C() 之间插入 B(), 验证 try/finally EH 表未损坏
+
+**期望**: SafeRun() 后 Log == "ABC"
+
+**实际**: ABC
+
+**结果**: PASS
+
+### 原始目标代码
+```csharp
+using System;
+using System.Text;
+
+namespace MonoModTestTargets;
+
+public class S203_MiddleInsertInTry
+{
+    public StringBuilder Log { get; } = new();
+
+    public void A() => Log.Append("A");
+    public void C() => Log.Append("C");
+
+    public void SafeRun()
+    {
+        try
+        {
+            A();
+            C();
+        }
+        catch (Exception)
+        {
+            Log.Append("!");
+        }
+    }
+}
+```
+
+### Patch 代码
+```csharp
+#pragma warning disable CS0626
+
+using System.Text;
+
+namespace MonoModTestTargets;
+
+internal class patch_S203_MiddleInsertInTry : S203_MiddleInsertInTry
+{
+    // New method added by patch. MonoModRules PostProcessor inserts a call to this
+    // between A() and C() inside the try block of SafeRun().
+    public void B() => Log.Append("B");
+}
+```
+
 ## 汇总
 
-- 通过: 119
+- 通过: 123
 - 失败: 0
-- 总计: 119
+- 总计: 123

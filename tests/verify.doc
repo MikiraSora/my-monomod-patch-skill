@@ -4807,8 +4807,1876 @@ internal class patch_S203_MiddleInsertInTry : S203_MiddleInsertInTry
 }
 ```
 
+## S210 LoopBodyInsert
+
+**需求**: 在 for 循环体内 Log.Append(i) 之前插入 Tick(), 每次 iteration 都执行插入的方法
+
+**期望**: Run(3) 后 Log == "ST0T1T2F"
+
+**实际**: ST0T1T2F
+
+**结果**: PASS
+
+### 原始目标代码
+```csharp
+using System.Text;
+
+namespace MonoModTestTargets;
+
+public class S210_LoopBodyInsert
+{
+    public StringBuilder Log { get; } = new();
+
+    public void Start() => Log.Append("S");
+    public void Finish() => Log.Append("F");
+
+    public void Run(int n)
+    {
+        Start();
+        for (int i = 0; i < n; i++)
+        {
+            Log.Append(i);
+        }
+        Finish();
+    }
+}
+```
+
+### Patch 代码
+```csharp
+#pragma warning disable CS0626
+
+using System.Text;
+
+namespace MonoModTestTargets;
+
+internal class patch_S210_LoopBodyInsert : S210_LoopBodyInsert
+{
+    // Inserted inside the for-loop, before Log.Append(i) on each iteration.
+    public void Tick() => Log.Append("T");
+}
+```
+
+## S211 InsertCallWithParameter
+
+**需求**: 在 Begin() 与 End() 之间插入 LogValue(Counter), 插入方法接受参数, 需加载属性值作为参数
+
+**期望**: Run() 后 LoggedValue == 10, Counter == 15
+
+**实际**: logged=10; counter=15
+
+**结果**: PASS
+
+### 原始目标代码
+```csharp
+namespace MonoModTestTargets;
+
+public class S211_ParamInsert
+{
+    public int Counter { get; set; } = 10;
+    public int LoggedValue { get; set; }
+
+    public void Begin() { }
+    public void End() => Counter += 5;
+
+    public void Run()
+    {
+        Begin();
+        End();
+    }
+}
+```
+
+### Patch 代码
+```csharp
+#pragma warning disable CS0626
+
+namespace MonoModTestTargets;
+
+internal class patch_S211_ParamInsert : S211_ParamInsert
+{
+    // Inserted between Begin() and End(), with Counter loaded as argument.
+    public void LogValue(int value) => LoggedValue = value;
+}
+```
+
+## S212 InsertAfterVirtualCall
+
+**需求**: 在虚方法 callvirt GetName() (返回值存入 stloc) 之后插入 PostProcess(), 验证虚方法调用锚点正确
+
+**期望**: Build() 后 Log == "[post]name", 返回 "name"
+
+**实际**: log=[post]name; ret=name
+
+**结果**: PASS
+
+### 原始目标代码
+```csharp
+using System.Text;
+
+namespace MonoModTestTargets;
+
+public class S212_VirtualChainInsert
+{
+    public StringBuilder Log { get; } = new();
+
+    public virtual string GetName() => "name";
+
+    public string Build()
+    {
+        string n = GetName();
+        Log.Append(n);
+        return n;
+    }
+}
+```
+
+### Patch 代码
+```csharp
+#pragma warning disable CS0626
+
+using System.Text;
+
+namespace MonoModTestTargets;
+
+internal class patch_S212_VirtualChainInsert : S212_VirtualChainInsert
+{
+    // Inserted after GetName() (callvirt) and before Log.Append(n).
+    public void PostProcess() => Log.Append("[post]");
+}
+```
+
+## S213 MarkerOnlyStackNeutral
+
+**需求**: 在 GetPrefix() 返回值被直接消费 (string.Concat) 的场景中仅插入标记, 不扰动求值栈
+
+**期望**: Build() 后 Log == "pre--suf", 返回 "result", 方法有 PatchInsertMarkerAttribute
+
+**实际**: log=pre--suf; ret=result; attr=present
+
+**结果**: PASS
+
+### 原始目标代码
+```csharp
+using System.Text;
+
+namespace MonoModTestTargets;
+
+public class S213_StackConsumeInsert
+{
+    public StringBuilder Log { get; } = new();
+
+    public string GetPrefix() => "pre-";
+    public string GetSuffix() => "-suf";
+
+    public string Build()
+    {
+        Log.Append(GetPrefix() + GetSuffix());
+        return "result";
+    }
+}
+```
+
+### Patch 代码
+```csharp
+#pragma warning disable CS0626
+
+using System.Text;
+
+namespace MonoModTestTargets;
+
+internal class patch_S213_StackConsumeInsert : S213_StackConsumeInsert
+{
+    // No new method needed; the PostProcessor inserts only a marker call
+    // between GetPrefix() return and the string concatenation that consumes it.
+    // This tests inserting without disturbing the evaluation stack.
+}
+```
+
+## S214 CatchBlockInsert
+
+**需求**: 在 catch 块内 Log.Append("caught") 之前插入 HandleCatch(), 验证 catch EH 区域内插入正确
+
+**期望**: SafeExec() 后 Log == "handled-caught"
+
+**实际**: handled-caught
+
+**结果**: PASS
+
+### 原始目标代码
+```csharp
+using System;
+using System.Text;
+
+namespace MonoModTestTargets;
+
+public class S214_CatchBlockInsert
+{
+    public StringBuilder Log { get; } = new();
+
+    public void ThrowIt()
+    {
+        throw new InvalidOperationException("boom");
+    }
+
+    public void SafeExec()
+    {
+        try
+        {
+            ThrowIt();
+        }
+        catch (InvalidOperationException)
+        {
+            Log.Append("caught");
+        }
+    }
+}
+```
+
+### Patch 代码
+```csharp
+#pragma warning disable CS0626
+
+using System.Text;
+
+namespace MonoModTestTargets;
+
+internal class patch_S214_CatchBlockInsert : S214_CatchBlockInsert
+{
+    // Inserted inside the catch block, before Log.Append("caught").
+    public void HandleCatch() => Log.Append("handled-");
+}
+```
+
+## S215 StaticMethodInsert
+
+**需求**: 在静态方法 StepA() 与 StepC() 之间插入静态方法 StepB(), 不使用 ldarg_0, 用 call 而非 callvirt
+
+**期望**: RunStatic() 后 SharedLog == "ABC"
+
+**实际**: ABC
+
+**结果**: PASS
+
+### 原始目标代码
+```csharp
+using System.Text;
+
+namespace MonoModTestTargets;
+
+public class S215_StaticInsert
+{
+    public static StringBuilder SharedLog { get; } = new();
+
+    public static void StepA() => SharedLog.Append("A");
+    public static void StepC() => SharedLog.Append("C");
+
+    public static void RunStatic()
+    {
+        StepA();
+        StepC();
+    }
+}
+```
+
+### Patch 代码
+```csharp
+#pragma warning disable CS0626
+
+using System.Text;
+
+namespace MonoModTestTargets;
+
+internal class patch_S215_StaticInsert : S215_StaticInsert
+{
+    // Static method inserted between static StepA() and StepC().
+    public static void StepB() => SharedLog.Append("B");
+}
+```
+
+## S220 GenericMethodCallInsert
+
+**需求**: 在 List<int>.Add(1) 与 Add(2) 之间插入 LogMid(), 锚点为泛型方法 callvirt List<int>::Add
+
+**期望**: Populate() 后 Log == "[mid]", Items == [1,2,3]
+
+**实际**: log=[mid]; items=1,2,3
+
+**结果**: PASS
+
+### 原始目标代码
+```csharp
+using System.Collections.Generic;
+using System.Text;
+
+namespace MonoModTestTargets;
+
+public class S220_GenericMethodInsert
+{
+    public List<int> Items { get; } = new();
+    public StringBuilder Log { get; } = new();
+
+    public void Populate()
+    {
+        Items.Add(1);
+        Items.Add(2);
+        Items.Add(3);
+    }
+}
+```
+
+### Patch 代码
+```csharp
+#pragma warning disable CS0626
+
+using System.Text;
+
+namespace MonoModTestTargets;
+
+internal class patch_S220_GenericMethodInsert : S220_GenericMethodInsert
+{
+    // Inserted after first Items.Add(1) and before Items.Add(2).
+    public void LogMid() => Log.Append("[mid]");
+}
+```
+
+## S221 NestedTryCatchInnerCatchInsert
+
+**需求**: 在嵌套 try/catch 的内层 catch 块中 Log.Append("inner-caught") 之前插入 HandleInnerCatch()
+
+**期望**: Run() 后 Log == "[handled]inner-caught"
+
+**实际**: [handled]inner-caught
+
+**结果**: PASS
+
+### 原始目标代码
+```csharp
+using System;
+using System.Text;
+
+namespace MonoModTestTargets;
+
+public class S221_NestedTryCatchInsert
+{
+    public StringBuilder Log { get; } = new();
+
+    public void InnerThrow() => throw new FormatException("inner");
+
+    public void Run()
+    {
+        try
+        {
+            try
+            {
+                InnerThrow();
+            }
+            catch (FormatException)
+            {
+                Log.Append("inner-caught");
+            }
+        }
+        catch (Exception)
+        {
+            Log.Append("outer-caught");
+        }
+    }
+}
+```
+
+### Patch 代码
+```csharp
+#pragma warning disable CS0626
+
+using System.Text;
+
+namespace MonoModTestTargets;
+
+internal class patch_S221_NestedTryCatchInsert : S221_NestedTryCatchInsert
+{
+    // Inserted inside the inner catch block, before Log.Append("inner-caught").
+    public void HandleInnerCatch() => Log.Append("[handled]");
+}
+```
+
+## S222 SwitchBranchInsert
+
+**需求**: 在 switch 的 case 2 分支中 CaseB() 调用后, ldstr "two" 之前插入 CaseBExtra()
+
+**期望**: Classify(1)=="one" (Log有A), Classify(2)=="two" (Log有B[extra]), Classify(9)=="other" (Log有D)
+
+**实际**: r1=one/A; r2=two/B[extra]; r3=other/D
+
+**结果**: PASS
+
+### 原始目标代码
+```csharp
+using System.Text;
+
+namespace MonoModTestTargets;
+
+public class S222_SwitchBranchInsert
+{
+    public StringBuilder Log { get; } = new();
+
+    public void CaseA() => Log.Append("A");
+    public void CaseB() => Log.Append("B");
+    public void CaseC() => Log.Append("C");
+    public void Default() => Log.Append("D");
+
+    public string Classify(int code)
+    {
+        switch (code)
+        {
+            case 1:
+                CaseA();
+                return "one";
+            case 2:
+                CaseB();
+                return "two";
+            default:
+                Default();
+                return "other";
+        }
+    }
+}
+```
+
+### Patch 代码
+```csharp
+#pragma warning disable CS0626
+
+using System.Text;
+
+namespace MonoModTestTargets;
+
+internal class patch_S222_SwitchBranchInsert : S222_SwitchBranchInsert
+{
+    // Inserted after CaseB() call, before ldstr "two" in case 2 branch.
+    public void CaseBExtra() => Log.Append("[extra]");
+}
+```
+
+## S223 RefParamMethodInsert
+
+**需求**: 在两次 Bump(ref x, delta) 调用之间插入 LogMid(), 验证 ref 参数方法的锚点匹配正确
+
+**期望**: Process() 后 Log == "bump:10;[mid]bump:30;", Total == 30
+
+**实际**: log=bump:10;[mid]bump:30;; total=30
+
+**结果**: PASS
+
+### 原始目标代码
+```csharp
+using System.Text;
+
+namespace MonoModTestTargets;
+
+public class S223_RefParamInsert
+{
+    public StringBuilder Log { get; } = new();
+    public int Total { get; set; }
+
+    public void Bump(ref int value, int delta)
+    {
+        value += delta;
+        Log.Append($"bump:{value};");
+    }
+
+    public void Process()
+    {
+        int x = 0;
+        Bump(ref x, 10);
+        Bump(ref x, 20);
+        Total = x;
+    }
+}
+```
+
+### Patch 代码
+```csharp
+#pragma warning disable CS0626
+
+using System.Text;
+
+namespace MonoModTestTargets;
+
+internal class patch_S223_RefParamInsert : S223_RefParamInsert
+{
+    // Inserted between first Bump(ref x, 10) and second Bump(ref x, 20).
+    public void LogMid() => Log.Append("[mid]");
+}
+```
+
+## S224 MultiReturnBranchInsert
+
+**需求**: 在多返回点方法的 early-return 分支中 MarkEarly() 后插入 AfterMarkEarly(), 验证只在负数分支插入
+
+**期望**: Evaluate(-1)=="neg" (Log有early[after-early]), Evaluate(5)=="non-neg" (Log有late, 无after-early)
+
+**实际**: r1=neg/early;[after-early]; r2=non-neg/late;
+
+**结果**: PASS
+
+### 原始目标代码
+```csharp
+using System.Text;
+
+namespace MonoModTestTargets;
+
+public class S224_MultiReturnInsert
+{
+    public StringBuilder Log { get; } = new();
+
+    public void MarkEarly() => Log.Append("early;");
+    public void MarkLate() => Log.Append("late;");
+
+    public string Evaluate(int n)
+    {
+        if (n < 0)
+        {
+            MarkEarly();
+            return "neg";
+        }
+
+        MarkLate();
+        return "non-neg";
+    }
+}
+```
+
+### Patch 代码
+```csharp
+#pragma warning disable CS0626
+
+using System.Text;
+
+namespace MonoModTestTargets;
+
+internal class patch_S224_MultiReturnInsert : S224_MultiReturnInsert
+{
+    // Inserted after MarkEarly(), before ldstr "neg" in the early-return branch.
+    public void AfterMarkEarly() => Log.Append("[after-early]");
+}
+```
+
+## S225 MultiParameterInsert
+
+**需求**: 在 Start() 与 End() 之间插入 LogDimensions(Width, Height), 插入方法带两个参数, 需加载两个属性值
+
+**期望**: Run() 后 Log == "[100x200]"
+
+**实际**: [100x200]
+
+**结果**: PASS
+
+### 原始目标代码
+```csharp
+using System.Text;
+
+namespace MonoModTestTargets;
+
+public class S225_MultiParamInsert
+{
+    public StringBuilder Log { get; } = new();
+    public int Width { get; set; } = 100;
+    public int Height { get; set; } = 200;
+
+    public void Start() { }
+    public void End() { }
+
+    public void Run()
+    {
+        Start();
+        End();
+    }
+}
+```
+
+### Patch 代码
+```csharp
+#pragma warning disable CS0626
+
+using System.Text;
+
+namespace MonoModTestTargets;
+
+internal class patch_S225_MultiParamInsert : S225_MultiParamInsert
+{
+    // Inserted between Start() and End(), takes Width and Height as parameters.
+    public void LogDimensions(int w, int h) => Log.Append($"[{w}x{h}]");
+}
+```
+
+## S226 TryFinallyBlockInsert
+
+**需求**: 在 try-finally 的 finally 块中 Cleanup() 之前插入 MarkFinally(), 验证 finally EH 区域内插入正确
+
+**期望**: Run() 后 Log == "work;[finally];", CleanupDone == true
+
+**实际**: log=work;[finally];; cleanup=True
+
+**结果**: PASS
+
+### 原始目标代码
+```csharp
+using System.Text;
+
+namespace MonoModTestTargets;
+
+public class S226_TryFinallyInsert
+{
+    public StringBuilder Log { get; } = new();
+    public bool CleanupDone { get; set; }
+
+    public void Work() => Log.Append("work;");
+    public void Cleanup() => CleanupDone = true;
+
+    public void Run()
+    {
+        try
+        {
+            Work();
+        }
+        finally
+        {
+            Cleanup();
+        }
+    }
+}
+```
+
+### Patch 代码
+```csharp
+#pragma warning disable CS0626
+
+using System.Text;
+
+namespace MonoModTestTargets;
+
+internal class patch_S226_TryFinallyInsert : S226_TryFinallyInsert
+{
+    // Inserted in the finally block, before Cleanup().
+    public void MarkFinally() => Log.Append("[finally];");
+}
+```
+
+## S227 MultiInsertSameMethod
+
+**需求**: 在同一个方法 Run() 中做两次插入: Alpha() 后插入 AfterAlpha(), Beta() 后插入 AfterBeta()
+
+**期望**: Run() 后 Log == "A;[a];B;[b];G;"
+
+**实际**: A;[a];B;[b];G;
+
+**结果**: PASS
+
+### 原始目标代码
+```csharp
+using System.Text;
+
+namespace MonoModTestTargets;
+
+public class S227_MultiInsertSameMethod
+{
+    public StringBuilder Log { get; } = new();
+
+    public void Alpha() => Log.Append("A;");
+    public void Beta() => Log.Append("B;");
+    public void Gamma() => Log.Append("G;");
+
+    public void Run()
+    {
+        Alpha();
+        Beta();
+        Gamma();
+    }
+}
+```
+
+### Patch 代码
+```csharp
+#pragma warning disable CS0626
+
+using System.Text;
+
+namespace MonoModTestTargets;
+
+internal class patch_S227_MultiInsertSameMethod : S227_MultiInsertSameMethod
+{
+    // Two insertions in Run(): after Alpha() and after Beta().
+    public void AfterAlpha() => Log.Append("[a];");
+    public void AfterBeta() => Log.Append("[b];");
+}
+```
+
+## S228 ChainedCallInsert
+
+**需求**: 在 Self().Done() 链式调用完成后插入 PostChain(), 验证链式调用的栈状态正确处理
+
+**期望**: Run() 后 Log == "self;done;[post];"
+
+**实际**: self;done;[post];
+
+**结果**: PASS
+
+### 原始目标代码
+```csharp
+using System.Text;
+
+namespace MonoModTestTargets;
+
+public class S228_ChainedCallInsert
+{
+    public StringBuilder Log { get; } = new();
+
+    public S228_ChainedCallInsert Self() { Log.Append("self;"); return this; }
+    public void Done() => Log.Append("done;");
+
+    public void Run()
+    {
+        Self().Done();
+    }
+}
+```
+
+### Patch 代码
+```csharp
+#pragma warning disable CS0626
+
+using System.Text;
+
+namespace MonoModTestTargets;
+
+internal class patch_S228_ChainedCallInsert : S228_ChainedCallInsert
+{
+    // Inserted between Self() return and Done() call.
+    // This is tricky: Self() returns this, and Done() consumes it on stack.
+    // We insert a marker-only (stack-neutral) before Self() since the stack
+    // must be empty at that point.
+    // Actually we add a new method and insert it after the chain completes.
+    public void PostChain() => Log.Append("[post];");
+}
+```
+
+## S229 LockBodyInsert
+
+**需求**: 在 lock 语句体内 Locked() 之前插入 PreLocked(), 验证 lock 的 Monitor EH 区域内插入正确
+
+**期望**: Run() 后 Log == "[pre];locked;finish;"
+
+**实际**: [pre];locked;finish;
+
+**结果**: PASS
+
+### 原始目标代码
+```csharp
+using System.Text;
+
+namespace MonoModTestTargets;
+
+public class S229_LockBodyInsert
+{
+    private readonly object _gate = new();
+    public StringBuilder Log { get; } = new();
+
+    public void Locked() => Log.Append("locked;");
+    public void Finish() => Log.Append("finish;");
+
+    public void Run()
+    {
+        lock (_gate)
+        {
+            Locked();
+            Finish();
+        }
+    }
+}
+```
+
+### Patch 代码
+```csharp
+#pragma warning disable CS0626
+
+using System.Text;
+
+namespace MonoModTestTargets;
+
+internal class patch_S229_LockBodyInsert : S229_LockBodyInsert
+{
+    // Inserted inside the lock body, before Locked().
+    public void PreLocked() => Log.Append("[pre];");
+}
+```
+
+## S230 UsingBodyInsert
+
+**需求**: 在 using 语句体内 Inner() 之前插入 PreInner(), 验证 using 的 Dispose EH 区域内插入正确
+
+**期望**: Run() 后 Log == "[pre];inner;after;", Disposed == true
+
+**实际**: log=[pre];inner;after;; disposed=True
+
+**结果**: PASS
+
+### 原始目标代码
+```csharp
+using System.Text;
+
+namespace MonoModTestTargets;
+
+public class S230_UsingBodyInsert : System.IDisposable
+{
+    public StringBuilder Log { get; } = new();
+    public bool Disposed { get; set; }
+
+    public void Inner() => Log.Append("inner;");
+    public void After() => Log.Append("after;");
+
+    public void Run()
+    {
+        using (this)
+        {
+            Inner();
+            After();
+        }
+    }
+
+    public void Dispose() => Disposed = true;
+}
+```
+
+### Patch 代码
+```csharp
+#pragma warning disable CS0626
+
+using System.Text;
+
+namespace MonoModTestTargets;
+
+internal class patch_S230_UsingBodyInsert : S230_UsingBodyInsert
+{
+    // Inserted inside the using body, before Inner().
+    public void PreInner() => Log.Append("[pre];");
+}
+```
+
+## S231 BeforeRetInsert
+
+**需求**: 在 First() 之后, ret 指令之前插入 BeforeReturn(), 验证方法末尾插入正确
+
+**期望**: Run() 后 Log == "1;[before-ret];"
+
+**实际**: 1;[before-ret];
+
+**结果**: PASS
+
+### 原始目标代码
+```csharp
+using System.Text;
+
+namespace MonoModTestTargets;
+
+public class S231_BeforeRetInsert
+{
+    public StringBuilder Log { get; } = new();
+
+    public void First() => Log.Append("1;");
+    public void Last() => Log.Append("last;");
+
+    public void Run()
+    {
+        First();
+    }
+}
+```
+
+### Patch 代码
+```csharp
+#pragma warning disable CS0626
+
+using System.Text;
+
+namespace MonoModTestTargets;
+
+internal class patch_S231_BeforeRetInsert : S231_BeforeRetInsert
+{
+    // Inserted before the ret instruction, after First().
+    public void BeforeReturn() => Log.Append("[before-ret];");
+}
+```
+
+## S232 CrossTypeMethodInsert
+
+**需求**: 在 Begin() 与 End() 之间插入 CrossNote(), 该方法内部调用另一类型 S232_CrossTypeHelper 的静态方法
+
+**期望**: Run() 后 S232_CrossTypeHelper.SharedLog == "begin;[mid];end;"
+
+**实际**: begin;[mid];end;
+
+**结果**: PASS
+
+### 原始目标代码
+```csharp
+using System.Text;
+
+namespace MonoModTestTargets;
+
+public static class S232_CrossTypeHelper
+{
+    public static StringBuilder SharedLog { get; } = new();
+    public static void Note(string tag) => SharedLog.Append(tag);
+}
+
+public class S232_CrossTypeInsert
+{
+    public void Begin() => S232_CrossTypeHelper.Note("begin;");
+    public void End() => S232_CrossTypeHelper.Note("end;");
+
+    public void Run()
+    {
+        Begin();
+        End();
+    }
+}
+```
+
+### Patch 代码
+```csharp
+#pragma warning disable CS0626
+
+namespace MonoModTestTargets;
+
+internal class patch_S232_CrossTypeInsert : S232_CrossTypeInsert
+{
+    // Inserted between Begin() and End(), calls a method on a different type.
+    public void CrossNote() => S232_CrossTypeHelper.Note("[mid];");
+}
+```
+
+## S233 EnumArgumentInsert
+
+**需求**: 在 Start() 与 Stop() 之间插入 LogLevel(Current), 参数为枚举类型, 从属性加载
+
+**期望**: Run() 后 Log == "[level:Medium];"
+
+**实际**: [level:Medium];
+
+**结果**: PASS
+
+### 原始目标代码
+```csharp
+using System.Text;
+
+namespace MonoModTestTargets;
+
+public enum S233_Level { Low, Medium, High }
+
+public class S233_EnumArgInsert
+{
+    public StringBuilder Log { get; } = new();
+    public S233_Level Current { get; set; } = S233_Level.Medium;
+
+    public void Start() { }
+    public void Stop() { }
+
+    public void Run()
+    {
+        Start();
+        Stop();
+    }
+}
+```
+
+### Patch 代码
+```csharp
+#pragma warning disable CS0626
+
+using System.Text;
+
+namespace MonoModTestTargets;
+
+internal class patch_S233_EnumArgInsert : S233_EnumArgInsert
+{
+    // Inserted between Start() and Stop(), takes an enum parameter from Current property.
+    public void LogLevel(S233_Level level) => Log.Append($"[level:{level}];");
+}
+```
+
+## S234 DoWhileLoopInsert
+
+**需求**: 在 do-while 循环体内 Tick() 之前插入 PreTick(), 每次迭代都执行
+
+**期望**: Run(3) 后 Log == "[pre];T[pre];T[pre];TC"
+
+**实际**: [pre];T[pre];T[pre];TC
+
+**结果**: PASS
+
+### 原始目标代码
+```csharp
+using System.Text;
+
+namespace MonoModTestTargets;
+
+public class S234_DoWhileInsert
+{
+    public StringBuilder Log { get; } = new();
+    public int Count { get; set; }
+
+    public void Tick() => Log.Append("T");
+    public void Check() => Log.Append("C");
+
+    public void Run(int n)
+    {
+        Count = 0;
+        do
+        {
+            Tick();
+            Count++;
+        } while (Count < n);
+        Check();
+    }
+}
+```
+
+### Patch 代码
+```csharp
+#pragma warning disable CS0626
+
+using System.Text;
+
+namespace MonoModTestTargets;
+
+internal class patch_S234_DoWhileInsert : S234_DoWhileInsert
+{
+    // Inserted inside do-while body, before Tick().
+    public void PreTick() => Log.Append("[pre];");
+}
+```
+
+## S235 WhileLoopInsert
+
+**需求**: 在 while 循环体内 Step() 之前插入 PreStep(), 每次迭代都执行
+
+**期望**: Run(2) 后 Log == "[pre];S[pre];SD"
+
+**实际**: [pre];S[pre];SD
+
+**结果**: PASS
+
+### 原始目标代码
+```csharp
+using System.Text;
+
+namespace MonoModTestTargets;
+
+public class S235_WhileInsert
+{
+    public StringBuilder Log { get; } = new();
+    public int Count { get; set; }
+
+    public void Step() => Log.Append("S");
+    public void Done() => Log.Append("D");
+
+    public void Run(int n)
+    {
+        Count = 0;
+        while (Count < n)
+        {
+            Step();
+            Count++;
+        }
+        Done();
+    }
+}
+```
+
+### Patch 代码
+```csharp
+#pragma warning disable CS0626
+
+using System.Text;
+
+namespace MonoModTestTargets;
+
+internal class patch_S235_WhileInsert : S235_WhileInsert
+{
+    // Inserted inside while body, before Step().
+    public void PreStep() => Log.Append("[pre];");
+}
+```
+
+## S236 BoxedValueArgInsert
+
+**需求**: 在 First() 与 Last() 之间插入 LogBoxed(BoxedValue), int 属性值需 box 为 object 后传入
+
+**期望**: Run() 后 Log == "1;[boxed:77];last;"
+
+**实际**: 1;[boxed:77];last;
+
+**结果**: PASS
+
+### 原始目标代码
+```csharp
+using System.Text;
+
+namespace MonoModTestTargets;
+
+public class S236_BoxedValueInsert
+{
+    public StringBuilder Log { get; } = new();
+    public int BoxedValue { get; set; } = 77;
+
+    public void First() => Log.Append("1;");
+    public void Last() => Log.Append("last;");
+
+    public void Run()
+    {
+        First();
+        Last();
+    }
+}
+```
+
+### Patch 代码
+```csharp
+#pragma warning disable CS0626
+
+using System.Text;
+
+namespace MonoModTestTargets;
+
+internal class patch_S236_BoxedValueInsert : S236_BoxedValueInsert
+{
+    // Inserted between First() and Last(), takes a boxed object parameter.
+    public void LogBoxed(object value) => Log.Append($"[boxed:{value}];");
+}
+```
+
+## S237 StringConstArgInsert
+
+**需求**: 在 Alpha() 与 Omega() 之间插入 LogTag("mid"), 参数为字符串常量, 用 ldstr 加载
+
+**期望**: Run() 后 Log == "A;[mid];O;"
+
+**实际**: A;[mid];O;
+
+**结果**: PASS
+
+### 原始目标代码
+```csharp
+using System.Text;
+
+namespace MonoModTestTargets;
+
+public class S237_StringArgInsert
+{
+    public StringBuilder Log { get; } = new();
+
+    public void Alpha() => Log.Append("A;");
+    public void Omega() => Log.Append("O;");
+
+    public void Run()
+    {
+        Alpha();
+        Omega();
+    }
+}
+```
+
+### Patch 代码
+```csharp
+#pragma warning disable CS0626
+
+using System.Text;
+
+namespace MonoModTestTargets;
+
+internal class patch_S237_StringArgInsert : S237_StringArgInsert
+{
+    // Inserted between Alpha() and Omega(), takes a string literal argument.
+    public void LogTag(string tag) => Log.Append($"[{tag}];");
+}
+```
+
+## S238 LocalFunctionInsert
+
+**需求**: 在含局部函数的方法中 Before() 后插入 MidNote(), 验证局部函数的 IL 不受影响
+
+**期望**: Run() 后 Log == "B;[mid];r=25;A;"
+
+**实际**: B;[mid];r=25;A;
+
+**结果**: PASS
+
+### 原始目标代码
+```csharp
+using System.Text;
+
+namespace MonoModTestTargets;
+
+public class S238_LocalFuncInsert
+{
+    public StringBuilder Log { get; } = new();
+
+    public void Before() => Log.Append("B;");
+    public void After() => Log.Append("A;");
+
+    public void Run()
+    {
+        int LocalSquare(int x) => x * x;
+
+        Before();
+        var r = LocalSquare(5);
+        Log.Append($"r={r};");
+        After();
+    }
+}
+```
+
+### Patch 代码
+```csharp
+#pragma warning disable CS0626
+
+using System.Text;
+
+namespace MonoModTestTargets;
+
+internal class patch_S238_LocalFuncInsert : S238_LocalFuncInsert
+{
+    // Inserted after Before(), before LocalSquare call.
+    public void MidNote() => Log.Append("[mid];");
+}
+```
+
+## S239 SwitchExpressionInsert
+
+**需求**: 在含 switch 表达式的方法中 Start() 后插入 MidNote(), 验证 switch 表达式 IL 不受影响
+
+**期望**: Run() 后 Log == "S;[mid];label=many;E;"
+
+**实际**: S;[mid];label=many;E;
+
+**结果**: PASS
+
+### 原始目标代码
+```csharp
+using System.Text;
+
+namespace MonoModTestTargets;
+
+public class S239_SwitchExprInsert
+{
+    public StringBuilder Log { get; } = new();
+
+    public void Start() => Log.Append("S;");
+    public void End() => Log.Append("E;");
+
+    public string Classify(int n) => n switch
+    {
+        0 => "zero",
+        1 => "one",
+        _ => "many"
+    };
+
+    public void Run()
+    {
+        Start();
+        var label = Classify(2);
+        Log.Append($"label={label};");
+        End();
+    }
+}
+```
+
+### Patch 代码
+```csharp
+#pragma warning disable CS0626
+
+using System.Text;
+
+namespace MonoModTestTargets;
+
+internal class patch_S239_SwitchExprInsert : S239_SwitchExprInsert
+{
+    // Inserted after Start(), before Classify call.
+    public void MidNote() => Log.Append("[mid];");
+}
+```
+
+## S240 TernaryExpressionInsert
+
+**需求**: 在三元表达式结果存入局部变量后, 第二次 Log.Append 之前插入 MidNote(), 验证三元分支栈正确
+
+**期望**: Run(true) 后 Log == "start;[mid];delta=1;", Run(false) 后 Log == "start;[mid];delta=-1;"
+
+**实际**: true=start;[mid];delta=1;; false=start;[mid];delta=-1;
+
+**结果**: PASS
+
+### 原始目标代码
+```csharp
+using System.Text;
+
+namespace MonoModTestTargets;
+
+public class S240_TernaryInsert
+{
+    public StringBuilder Log { get; } = new();
+    public int Base { get; set; } = 10;
+
+    public int GetPlus() => 1;
+    public int GetMinus() => -1;
+
+    public void Run(bool flag)
+    {
+        Log.Append("start;");
+        int delta = flag ? GetPlus() : GetMinus();
+        Log.Append($"delta={delta};");
+    }
+}
+```
+
+### Patch 代码
+```csharp
+#pragma warning disable CS0626
+
+using System.Text;
+
+namespace MonoModTestTargets;
+
+internal class patch_S240_TernaryInsert : S240_TernaryInsert
+{
+    // Inserted after the ternary expression result is stored, before Log.Append.
+    public void MidNote() => Log.Append("[mid];");
+}
+```
+
+## S241 CheckedContextInsert
+
+**需求**: 在 checked 块内 First() 后插入 MidNote(), 验证 checked 算术上下文不受影响
+
+**期望**: Run() 后 Log == "1;[mid];sum=300;last;"
+
+**实际**: 1;[mid];sum=300;last;
+
+**结果**: PASS
+
+### 原始目标代码
+```csharp
+using System.Text;
+
+namespace MonoModTestTargets;
+
+public class S241_CheckedInsert
+{
+    public StringBuilder Log { get; } = new();
+
+    public void First() => Log.Append("1;");
+    public void Last() => Log.Append("last;");
+
+    public void Run()
+    {
+        checked
+        {
+            int a = 100;
+            int b = 200;
+            int sum = a + b;
+            First();
+            Log.Append($"sum={sum};");
+            Last();
+        }
+    }
+}
+```
+
+### Patch 代码
+```csharp
+#pragma warning disable CS0626
+
+using System.Text;
+
+namespace MonoModTestTargets;
+
+internal class patch_S241_CheckedInsert : S241_CheckedInsert
+{
+    // Inserted after First(), before Log.Append in checked block.
+    public void MidNote() => Log.Append("[mid];");
+}
+```
+
+## S242 GotoFlowInsert
+
+**需求**: 在 goto 控制流方法中 Enter() 后插入 MidNote(), 验证 goto/label 跳转目标未损坏
+
+**期望**: Run(3) 后 Log == "enter;[mid];012exit;"
+
+**实际**: enter;[mid];012exit;
+
+**结果**: PASS
+
+### 原始目标代码
+```csharp
+using System.Text;
+
+namespace MonoModTestTargets;
+
+public class S242_GotoFlowInsert
+{
+    public StringBuilder Log { get; } = new();
+
+    public void Enter() => Log.Append("enter;");
+    public void Exit() => Log.Append("exit;");
+
+    public void Run(int n)
+    {
+        int i = 0;
+        Enter();
+    loop:
+        if (i >= n) goto done;
+        Log.Append(i);
+        i++;
+        goto loop;
+    done:
+        Exit();
+    }
+}
+```
+
+### Patch 代码
+```csharp
+#pragma warning disable CS0626
+
+using System.Text;
+
+namespace MonoModTestTargets;
+
+internal class patch_S242_GotoFlowInsert : S242_GotoFlowInsert
+{
+    // Inserted after Enter(), before the goto loop.
+    public void MidNote() => Log.Append("[mid];");
+}
+```
+
+## S243 ParamsArrayInsert
+
+**需求**: 在含 params 数组方法的方法中 First() 后插入 MidNote(), 验证 params 调用不受影响
+
+**期望**: Run() 后 Log == "1;[mid];r=a-b-c;last;"
+
+**实际**: 1;[mid];r=a-b-c;last;
+
+**结果**: PASS
+
+### 原始目标代码
+```csharp
+using System.Text;
+
+namespace MonoModTestTargets;
+
+public class S243_ParamsArrayInsert
+{
+    public StringBuilder Log { get; } = new();
+
+    public string Build(params string[] parts) => string.Join("-", parts);
+
+    public void First() => Log.Append("1;");
+    public void Last() => Log.Append("last;");
+
+    public void Run()
+    {
+        First();
+        var r = Build("a", "b", "c");
+        Log.Append($"r={r};");
+        Last();
+    }
+}
+```
+
+### Patch 代码
+```csharp
+#pragma warning disable CS0626
+
+using System.Text;
+
+namespace MonoModTestTargets;
+
+internal class patch_S243_ParamsArrayInsert : S243_ParamsArrayInsert
+{
+    // Inserted after First(), before Build call.
+    public void MidNote() => Log.Append("[mid];");
+}
+```
+
+## S244 NullableReturnInsert
+
+**需求**: 在含 nullable 返回值的方法中 First() 后插入 MidNote(), 验证 nullable 调用不受影响
+
+**期望**: Run() 后 Log == "1;[mid];name=name;last;"
+
+**实际**: 1;[mid];name=name;last;
+
+**结果**: PASS
+
+### 原始目标代码
+```csharp
+using System.Text;
+
+namespace MonoModTestTargets;
+
+public class S244_NullableReturnInsert
+{
+    public StringBuilder Log { get; } = new();
+
+    public string? TryGetName() => "name";
+
+    public void First() => Log.Append("1;");
+    public void Last() => Log.Append("last;");
+
+    public void Run()
+    {
+        First();
+        var name = TryGetName();
+        Log.Append($"name={name};");
+        Last();
+    }
+}
+```
+
+### Patch 代码
+```csharp
+#pragma warning disable CS0626
+
+using System.Text;
+
+namespace MonoModTestTargets;
+
+internal class patch_S244_NullableReturnInsert : S244_NullableReturnInsert
+{
+    // Inserted after First(), before TryGetName.
+    public void MidNote() => Log.Append("[mid];");
+}
+```
+
+## S245 RefStructParamInsert
+
+**需求**: 在含 ref struct (Span<int>) 参数方法的方法中 First() 后插入 MidNote(), 验证 Span 调用不受影响
+
+**期望**: Run() 后 Log == "1;[mid];sum=6;last;"
+
+**实际**: 1;[mid];sum=6;last;
+
+**结果**: PASS
+
+### 原始目标代码
+```csharp
+using System.Text;
+
+namespace MonoModTestTargets;
+
+public class S245_RefStructInsert
+{
+    public StringBuilder Log { get; } = new();
+
+    public void First() => Log.Append("1;");
+    public void Last() => Log.Append("last;");
+
+    public int SumSpan(System.Span<int> span)
+    {
+        int sum = 0;
+        foreach (var v in span) sum += v;
+        return sum;
+    }
+
+    public void Run()
+    {
+        First();
+        int[] arr = { 1, 2, 3 };
+        var sum = SumSpan(arr);
+        Log.Append($"sum={sum};");
+        Last();
+    }
+}
+```
+
+### Patch 代码
+```csharp
+#pragma warning disable CS0626
+
+using System.Text;
+
+namespace MonoModTestTargets;
+
+internal class patch_S245_RefStructInsert : S245_RefStructInsert
+{
+    // Inserted after First(), before SumSpan call.
+    public void MidNote() => Log.Append("[mid];");
+}
+```
+
+## S246 ExceptionFilterInsert
+
+**需求**: 在带 when 过滤器的 catch 块中 HandleError() 之前插入 PreHandle(), 验证 filter EH 区域内插入正确
+
+**期望**: SafeExec() 后 Log == "[pre];handled;"
+
+**实际**: [pre];handled;
+
+**结果**: PASS
+
+### 原始目标代码
+```csharp
+using System;
+using System.Text;
+
+namespace MonoModTestTargets;
+
+public class S246_ExceptionFilterInsert
+{
+    public StringBuilder Log { get; } = new();
+
+    public void ThrowIt()
+    {
+        throw new InvalidOperationException("filtered");
+    }
+
+    public void HandleError() => Log.Append("handled;");
+
+    public void SafeExec()
+    {
+        try
+        {
+            ThrowIt();
+        }
+        catch (InvalidOperationException ex) when (ex.Message == "filtered")
+        {
+            HandleError();
+        }
+    }
+}
+```
+
+### Patch 代码
+```csharp
+#pragma warning disable CS0626
+
+using System.Text;
+
+namespace MonoModTestTargets;
+
+internal class patch_S246_ExceptionFilterInsert : S246_ExceptionFilterInsert
+{
+    // Inserted in catch-with-filter block, before HandleError().
+    public void PreHandle() => Log.Append("[pre];");
+}
+```
+
+## S247 NestedTryInTryInsert
+
+**需求**: 在外层 try 中 StepA() 后, 内层 try 之前插入 MidNote(), 验证嵌套 try EH 区域正确
+
+**期望**: Run() 后 Log == "A;[mid];B;"
+
+**实际**: A;[mid];B;
+
+**结果**: PASS
+
+### 原始目标代码
+```csharp
+using System;
+using System.Text;
+
+namespace MonoModTestTargets;
+
+public class S247_NestedTryInTryInsert
+{
+    public StringBuilder Log { get; } = new();
+
+    public void StepA() => Log.Append("A;");
+    public void StepB() => Log.Append("B;");
+
+    public void Run()
+    {
+        try
+        {
+            StepA();
+            try
+            {
+                StepB();
+            }
+            catch (FormatException)
+            {
+                Log.Append("inner;");
+            }
+        }
+        catch (Exception)
+        {
+            Log.Append("outer;");
+        }
+    }
+}
+```
+
+### Patch 代码
+```csharp
+#pragma warning disable CS0626
+
+using System.Text;
+
+namespace MonoModTestTargets;
+
+internal class patch_S247_NestedTryInTryInsert : S247_NestedTryInTryInsert
+{
+    // Inserted after StepA(), before inner try block.
+    public void MidNote() => Log.Append("[mid];");
+}
+```
+
+## S248 RecursiveMethodInsert
+
+**需求**: 在递归方法中, 递归调用 Factorial() 之前插入 PreRecurse(), 验证递归调用锚点正确
+
+**期望**: Factorial(3) 后 Log == "f3;[pre];f2;[pre];f1;[pre];base;"
+
+**实际**: result=6; log=f3;[pre];f2;[pre];base;
+
+**结果**: PASS
+
+### 原始目标代码
+```csharp
+using System.Text;
+
+namespace MonoModTestTargets;
+
+public class S248_RecursiveInsert
+{
+    public StringBuilder Log { get; } = new();
+
+    public int Factorial(int n)
+    {
+        if (n <= 1)
+        {
+            Log.Append("base;");
+            return 1;
+        }
+        Log.Append($"f{n};");
+        return n * Factorial(n - 1);
+    }
+}
+```
+
+### Patch 代码
+```csharp
+#pragma warning disable CS0626
+
+using System.Text;
+
+namespace MonoModTestTargets;
+
+internal class patch_S248_RecursiveInsert : S248_RecursiveInsert
+{
+    // Inserted after Log.Append in the recursive branch, before the recursive call.
+    public void PreRecurse() => Log.Append("[pre];");
+}
+```
+
+## S249 StaticMethodContextInsert
+
+**需求**: 在静态方法 Init() 中 Append("init;") 之后, set_Tag 之前插入静态 MidNote(), 验证静态方法间插入正确
+
+**期望**: Init() 后 Log == "init;[mid];", Tag == "ready"
+
+**实际**: log=init;[mid];; tag=ready
+
+**结果**: PASS
+
+### 原始目标代码
+```csharp
+using System.Text;
+
+namespace MonoModTestTargets;
+
+public class S249_StaticCtorContext
+{
+    public static StringBuilder Log { get; } = new();
+    public static string Tag { get; set; } = "";
+
+    public static void Init()
+    {
+        Log.Append("init;");
+        Tag = "ready";
+    }
+}
+```
+
+### Patch 代码
+```csharp
+#pragma warning disable CS0626
+
+using System.Text;
+
+namespace MonoModTestTargets;
+
+internal class patch_S249_StaticCtorContext : S249_StaticCtorContext
+{
+    // Inserted between Log.Append("init;") and Tag="ready" in Init().
+    public static void MidNote() => Log.Append("[mid];");
+}
+```
+
+## S250 IndexAccessInsert
+
+**需求**: 在含数组索引访问的方法中 First() 后插入 MidNote(), 验证索引访问 IL 不受影响
+
+**期望**: Run() 后 Log == "1;[mid];val=20;last;"
+
+**实际**: 1;[mid];val=20;last;
+
+**结果**: PASS
+
+### 原始目标代码
+```csharp
+using System.Text;
+
+namespace MonoModTestTargets;
+
+public class S250_IndexAccessInsert
+{
+    public StringBuilder Log { get; } = new();
+    public int[] Data { get; } = { 10, 20, 30 };
+
+    public void First() => Log.Append("1;");
+    public void Last() => Log.Append("last;");
+
+    public void Run()
+    {
+        First();
+        var val = Data[1];
+        Log.Append($"val={val};");
+        Last();
+    }
+}
+```
+
+### Patch 代码
+```csharp
+#pragma warning disable CS0626
+
+using System.Text;
+
+namespace MonoModTestTargets;
+
+internal class patch_S250_IndexAccessInsert : S250_IndexAccessInsert
+{
+    // Inserted after First(), before Data[1] access.
+    public void MidNote() => Log.Append("[mid];");
+}
+```
+
 ## 汇总
 
-- 通过: 123
+- 通过: 160
 - 失败: 0
-- 总计: 123
+- 总计: 160

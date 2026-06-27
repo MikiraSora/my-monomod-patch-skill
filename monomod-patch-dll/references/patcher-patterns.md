@@ -49,6 +49,19 @@ Rules:
 - For overrides, keep `override` when the target method is overrideable in C#.
 - Omit the `orig_` method only when the patch should fully replace behavior.
 
+## When orig_ Is Not Enough: Middle-Of-Method Insertion
+
+The `orig_` wrapper treats the original method body as an indivisible black box. You can only add code before or after `orig_MethodName()`. If the requirement is to insert code **between** two existing calls inside the original method (for example, the original calls A then C, and you need A then B then C), `orig_` cannot express this.
+
+In this case, use `MonoModRules` with a `PostProcessor` delegate to perform Cecil-level IL insertion. The approach:
+
+1. Add the insertion method (e.g., `B()`) via a normal `patch_` class so MonoMod copies it into the target type.
+2. Add a `MonoMod.MonoModRules` class with a **static** constructor that creates dnSpy-visible marker infrastructure and registers a `PostProcessor`.
+3. The `PostProcessor` runs after all patching is complete. It uses `ILProcessor.InsertAfter` or `InsertBefore` to inject a call to `B()` at the precise instruction boundary.
+4. Always inspect the target method IL first (with ILSpy, dnSpy, or a Cecil inspector) to identify the anchor call instruction by callee method name and confirm the occurrence count.
+
+See `references/modifier-recipes.md` section "Precise IL Insertion" for the full skeleton, 8 tested insertion variants, verified EH region scenarios, and 10 ordered pitfalls. This approach was verified across 41 scenarios (S200-S250) covering void calls, non-void returns, loops, try/catch/finally, switch branches, generics, ref params, boxed args, string constants, recursive methods, and more.
+
 ## Constructor Patching
 
 Use `[MonoModConstructor]` for constructor patches:

@@ -1877,6 +1877,590 @@ internal static class Program
                 var got = (string)t.GetProperty("Log")!.GetValue(inst)!.ToString()!;
                 return new ScenarioResult(got, got == "ABC");
             }),
+
+        // --- Advanced IL Insertion (complex anchor / stack / EH scenarios) ---
+
+        new("S210", "LoopBodyInsert",
+            "在 for 循环体内 Log.Append(i) 之前插入 Tick(), 每次 iteration 都执行插入的方法",
+            "Run(3) 后 Log == \"ST0T1T2F\"",
+            "ScenarioTargets/Scenarios/S210_LoopBodyInsert.cs",
+            "ScenarioTargets.Patches.mm/Scenarios/S210_LoopBodyInsertPatch.cs",
+            a =>
+            {
+                var t = a.GetType("MonoModTestTargets.S210_LoopBodyInsert")!;
+                var inst = Activator.CreateInstance(t)!;
+                t.GetMethod("Run")!.Invoke(inst, new object[] { 3 });
+                var got = (string)t.GetProperty("Log")!.GetValue(inst)!.ToString()!;
+                return new ScenarioResult(got, got == "ST0T1T2F");
+            }),
+
+        new("S211", "InsertCallWithParameter",
+            "在 Begin() 与 End() 之间插入 LogValue(Counter), 插入方法接受参数, 需加载属性值作为参数",
+            "Run() 后 LoggedValue == 10, Counter == 15",
+            "ScenarioTargets/Scenarios/S211_ParamInsert.cs",
+            "ScenarioTargets.Patches.mm/Scenarios/S211_ParamInsertPatch.cs",
+            a =>
+            {
+                var t = a.GetType("MonoModTestTargets.S211_ParamInsert")!;
+                var inst = Activator.CreateInstance(t)!;
+                t.GetMethod("Run")!.Invoke(inst, null);
+                var logged = (int)t.GetProperty("LoggedValue")!.GetValue(inst)!;
+                var counter = (int)t.GetProperty("Counter")!.GetValue(inst)!;
+                var actual = $"logged={logged}; counter={counter}";
+                return new ScenarioResult(actual, logged == 10 && counter == 15);
+            }),
+
+        new("S212", "InsertAfterVirtualCall",
+            "在虚方法 callvirt GetName() (返回值存入 stloc) 之后插入 PostProcess(), 验证虚方法调用锚点正确",
+            "Build() 后 Log == \"[post]name\", 返回 \"name\"",
+            "ScenarioTargets/Scenarios/S212_VirtualChainInsert.cs",
+            "ScenarioTargets.Patches.mm/Scenarios/S212_VirtualChainInsertPatch.cs",
+            a =>
+            {
+                var t = a.GetType("MonoModTestTargets.S212_VirtualChainInsert")!;
+                var inst = Activator.CreateInstance(t)!;
+                var ret = (string)t.GetMethod("Build")!.Invoke(inst, null)!;
+                var log = (string)t.GetProperty("Log")!.GetValue(inst)!.ToString()!;
+                var actual = $"log={log}; ret={ret}";
+                return new ScenarioResult(actual, log == "[post]name" && ret == "name");
+            }),
+
+        new("S213", "MarkerOnlyStackNeutral",
+            "在 GetPrefix() 返回值被直接消费 (string.Concat) 的场景中仅插入标记, 不扰动求值栈",
+            "Build() 后 Log == \"pre--suf\", 返回 \"result\", 方法有 PatchInsertMarkerAttribute",
+            "ScenarioTargets/Scenarios/S213_StackConsumeInsert.cs",
+            "ScenarioTargets.Patches.mm/Scenarios/S213_StackConsumeInsertPatch.cs",
+            a =>
+            {
+                var t = a.GetType("MonoModTestTargets.S213_StackConsumeInsert")!;
+                var inst = Activator.CreateInstance(t)!;
+                var ret = (string)t.GetMethod("Build")!.Invoke(inst, null)!;
+                var log = (string)t.GetProperty("Log")!.GetValue(inst)!.ToString()!;
+                var hasAttr = t.GetMethod("Build")!.GetCustomAttributes(false)
+                    .Any(attr => attr.GetType().Name == "PatchInsertMarkerAttribute");
+                var actual = $"log={log}; ret={ret}; attr={(hasAttr ? "present" : "absent")}";
+                return new ScenarioResult(actual, log == "pre--suf" && ret == "result" && hasAttr);
+            }),
+
+        new("S214", "CatchBlockInsert",
+            "在 catch 块内 Log.Append(\"caught\") 之前插入 HandleCatch(), 验证 catch EH 区域内插入正确",
+            "SafeExec() 后 Log == \"handled-caught\"",
+            "ScenarioTargets/Scenarios/S214_CatchBlockInsert.cs",
+            "ScenarioTargets.Patches.mm/Scenarios/S214_CatchBlockInsertPatch.cs",
+            a =>
+            {
+                var t = a.GetType("MonoModTestTargets.S214_CatchBlockInsert")!;
+                var inst = Activator.CreateInstance(t)!;
+                t.GetMethod("SafeExec")!.Invoke(inst, null);
+                var got = (string)t.GetProperty("Log")!.GetValue(inst)!.ToString()!;
+                return new ScenarioResult(got, got == "handled-caught");
+            }),
+
+        new("S215", "StaticMethodInsert",
+            "在静态方法 StepA() 与 StepC() 之间插入静态方法 StepB(), 不使用 ldarg_0, 用 call 而非 callvirt",
+            "RunStatic() 后 SharedLog == \"ABC\"",
+            "ScenarioTargets/Scenarios/S215_StaticInsert.cs",
+            "ScenarioTargets.Patches.mm/Scenarios/S215_StaticInsertPatch.cs",
+            a =>
+            {
+                var t = a.GetType("MonoModTestTargets.S215_StaticInsert")!;
+                // Reset static state before test
+                var sb = (System.Text.StringBuilder)t.GetProperty("SharedLog")!.GetValue(null)!;
+                sb.Clear();
+                t.GetMethod("RunStatic")!.Invoke(null, null);
+                var got = sb.ToString();
+                return new ScenarioResult(got, got == "ABC");
+            }),
+
+        // --- Advanced IL Insertion (complex control flow / generics / multi-arg) ---
+
+        new("S220", "GenericMethodCallInsert",
+            "在 List<int>.Add(1) 与 Add(2) 之间插入 LogMid(), 锚点为泛型方法 callvirt List<int>::Add",
+            "Populate() 后 Log == \"[mid]\", Items == [1,2,3]",
+            "ScenarioTargets/Scenarios/S220_GenericMethodInsert.cs",
+            "ScenarioTargets.Patches.mm/Scenarios/S220_GenericMethodInsertPatch.cs",
+            a =>
+            {
+                var t = a.GetType("MonoModTestTargets.S220_GenericMethodInsert")!;
+                var inst = Activator.CreateInstance(t)!;
+                t.GetMethod("Populate")!.Invoke(inst, null);
+                var log = (string)t.GetProperty("Log")!.GetValue(inst)!.ToString()!;
+                var items = (System.Collections.Generic.List<int>)t.GetProperty("Items")!.GetValue(inst)!;
+                var actual = $"log={log}; items={string.Join(",", items)}";
+                return new ScenarioResult(actual, log == "[mid]" && items.Count == 3 && items[0] == 1 && items[1] == 2 && items[2] == 3);
+            }),
+
+        new("S221", "NestedTryCatchInnerCatchInsert",
+            "在嵌套 try/catch 的内层 catch 块中 Log.Append(\"inner-caught\") 之前插入 HandleInnerCatch()",
+            "Run() 后 Log == \"[handled]inner-caught\"",
+            "ScenarioTargets/Scenarios/S221_NestedTryCatchInsert.cs",
+            "ScenarioTargets.Patches.mm/Scenarios/S221_NestedTryCatchInsertPatch.cs",
+            a =>
+            {
+                var t = a.GetType("MonoModTestTargets.S221_NestedTryCatchInsert")!;
+                var inst = Activator.CreateInstance(t)!;
+                t.GetMethod("Run")!.Invoke(inst, null);
+                var got = (string)t.GetProperty("Log")!.GetValue(inst)!.ToString()!;
+                return new ScenarioResult(got, got == "[handled]inner-caught");
+            }),
+
+        new("S222", "SwitchBranchInsert",
+            "在 switch 的 case 2 分支中 CaseB() 调用后, ldstr \"two\" 之前插入 CaseBExtra()",
+            "Classify(1)==\"one\" (Log有A), Classify(2)==\"two\" (Log有B[extra]), Classify(9)==\"other\" (Log有D)",
+            "ScenarioTargets/Scenarios/S222_SwitchBranchInsert.cs",
+            "ScenarioTargets.Patches.mm/Scenarios/S222_SwitchBranchInsertPatch.cs",
+            a =>
+            {
+                var t = a.GetType("MonoModTestTargets.S222_SwitchBranchInsert")!;
+                var inst1 = Activator.CreateInstance(t)!;
+                var r1 = (string)t.GetMethod("Classify")!.Invoke(inst1, new object[] { 1 })!;
+                var log1 = (string)t.GetProperty("Log")!.GetValue(inst1)!.ToString()!;
+
+                var inst2 = Activator.CreateInstance(t)!;
+                var r2 = (string)t.GetMethod("Classify")!.Invoke(inst2, new object[] { 2 })!;
+                var log2 = (string)t.GetProperty("Log")!.GetValue(inst2)!.ToString()!;
+
+                var inst3 = Activator.CreateInstance(t)!;
+                var r3 = (string)t.GetMethod("Classify")!.Invoke(inst3, new object[] { 9 })!;
+                var log3 = (string)t.GetProperty("Log")!.GetValue(inst3)!.ToString()!;
+
+                var actual = $"r1={r1}/{log1}; r2={r2}/{log2}; r3={r3}/{log3}";
+                return new ScenarioResult(actual,
+                    r1 == "one" && log1 == "A" &&
+                    r2 == "two" && log2 == "B[extra]" &&
+                    r3 == "other" && log3 == "D");
+            }),
+
+        new("S223", "RefParamMethodInsert",
+            "在两次 Bump(ref x, delta) 调用之间插入 LogMid(), 验证 ref 参数方法的锚点匹配正确",
+            "Process() 后 Log == \"bump:10;[mid]bump:30;\", Total == 30",
+            "ScenarioTargets/Scenarios/S223_RefParamInsert.cs",
+            "ScenarioTargets.Patches.mm/Scenarios/S223_RefParamInsertPatch.cs",
+            a =>
+            {
+                var t = a.GetType("MonoModTestTargets.S223_RefParamInsert")!;
+                var inst = Activator.CreateInstance(t)!;
+                t.GetMethod("Process")!.Invoke(inst, null);
+                var log = (string)t.GetProperty("Log")!.GetValue(inst)!.ToString()!;
+                var total = (int)t.GetProperty("Total")!.GetValue(inst)!;
+                var actual = $"log={log}; total={total}";
+                return new ScenarioResult(actual, log == "bump:10;[mid]bump:30;" && total == 30);
+            }),
+
+        new("S224", "MultiReturnBranchInsert",
+            "在多返回点方法的 early-return 分支中 MarkEarly() 后插入 AfterMarkEarly(), 验证只在负数分支插入",
+            "Evaluate(-1)==\"neg\" (Log有early[after-early]), Evaluate(5)==\"non-neg\" (Log有late, 无after-early)",
+            "ScenarioTargets/Scenarios/S224_MultiReturnInsert.cs",
+            "ScenarioTargets.Patches.mm/Scenarios/S224_MultiReturnInsertPatch.cs",
+            a =>
+            {
+                var t = a.GetType("MonoModTestTargets.S224_MultiReturnInsert")!;
+                var inst1 = Activator.CreateInstance(t)!;
+                var r1 = (string)t.GetMethod("Evaluate")!.Invoke(inst1, new object[] { -1 })!;
+                var log1 = (string)t.GetProperty("Log")!.GetValue(inst1)!.ToString()!;
+
+                var inst2 = Activator.CreateInstance(t)!;
+                var r2 = (string)t.GetMethod("Evaluate")!.Invoke(inst2, new object[] { 5 })!;
+                var log2 = (string)t.GetProperty("Log")!.GetValue(inst2)!.ToString()!;
+
+                var actual = $"r1={r1}/{log1}; r2={r2}/{log2}";
+                return new ScenarioResult(actual,
+                    r1 == "neg" && log1 == "early;[after-early]" &&
+                    r2 == "non-neg" && log2 == "late;");
+            }),
+
+        new("S225", "MultiParameterInsert",
+            "在 Start() 与 End() 之间插入 LogDimensions(Width, Height), 插入方法带两个参数, 需加载两个属性值",
+            "Run() 后 Log == \"[100x200]\"",
+            "ScenarioTargets/Scenarios/S225_MultiParamInsert.cs",
+            "ScenarioTargets.Patches.mm/Scenarios/S225_MultiParamInsertPatch.cs",
+            a =>
+            {
+                var t = a.GetType("MonoModTestTargets.S225_MultiParamInsert")!;
+                var inst = Activator.CreateInstance(t)!;
+                t.GetMethod("Run")!.Invoke(inst, null);
+                var got = (string)t.GetProperty("Log")!.GetValue(inst)!.ToString()!;
+                return new ScenarioResult(got, got == "[100x200]");
+            }),
+
+        // --- S226-S231: try-finally / multi-insert / chain / lock / using / before-ret ---
+
+        new("S226", "TryFinallyBlockInsert",
+            "在 try-finally 的 finally 块中 Cleanup() 之前插入 MarkFinally(), 验证 finally EH 区域内插入正确",
+            "Run() 后 Log == \"work;[finally];\", CleanupDone == true",
+            "ScenarioTargets/Scenarios/S226_TryFinallyInsert.cs",
+            "ScenarioTargets.Patches.mm/Scenarios/S226_TryFinallyInsertPatch.cs",
+            a =>
+            {
+                var t = a.GetType("MonoModTestTargets.S226_TryFinallyInsert")!;
+                var inst = Activator.CreateInstance(t)!;
+                t.GetMethod("Run")!.Invoke(inst, null);
+                var log = (string)t.GetProperty("Log")!.GetValue(inst)!.ToString()!;
+                var cleanup = (bool)t.GetProperty("CleanupDone")!.GetValue(inst)!;
+                var actual = $"log={log}; cleanup={cleanup}";
+                return new ScenarioResult(actual, log == "work;[finally];" && cleanup);
+            }),
+
+        new("S227", "MultiInsertSameMethod",
+            "在同一个方法 Run() 中做两次插入: Alpha() 后插入 AfterAlpha(), Beta() 后插入 AfterBeta()",
+            "Run() 后 Log == \"A;[a];B;[b];G;\"",
+            "ScenarioTargets/Scenarios/S227_MultiInsertSameMethod.cs",
+            "ScenarioTargets.Patches.mm/Scenarios/S227_MultiInsertSameMethodPatch.cs",
+            a =>
+            {
+                var t = a.GetType("MonoModTestTargets.S227_MultiInsertSameMethod")!;
+                var inst = Activator.CreateInstance(t)!;
+                t.GetMethod("Run")!.Invoke(inst, null);
+                var got = (string)t.GetProperty("Log")!.GetValue(inst)!.ToString()!;
+                return new ScenarioResult(got, got == "A;[a];B;[b];G;");
+            }),
+
+        new("S228", "ChainedCallInsert",
+            "在 Self().Done() 链式调用完成后插入 PostChain(), 验证链式调用的栈状态正确处理",
+            "Run() 后 Log == \"self;done;[post];\"",
+            "ScenarioTargets/Scenarios/S228_ChainedCallInsert.cs",
+            "ScenarioTargets.Patches.mm/Scenarios/S228_ChainedCallInsertPatch.cs",
+            a =>
+            {
+                var t = a.GetType("MonoModTestTargets.S228_ChainedCallInsert")!;
+                var inst = Activator.CreateInstance(t)!;
+                t.GetMethod("Run")!.Invoke(inst, null);
+                var got = (string)t.GetProperty("Log")!.GetValue(inst)!.ToString()!;
+                return new ScenarioResult(got, got == "self;done;[post];");
+            }),
+
+        new("S229", "LockBodyInsert",
+            "在 lock 语句体内 Locked() 之前插入 PreLocked(), 验证 lock 的 Monitor EH 区域内插入正确",
+            "Run() 后 Log == \"[pre];locked;finish;\"",
+            "ScenarioTargets/Scenarios/S229_LockBodyInsert.cs",
+            "ScenarioTargets.Patches.mm/Scenarios/S229_LockBodyInsertPatch.cs",
+            a =>
+            {
+                var t = a.GetType("MonoModTestTargets.S229_LockBodyInsert")!;
+                var inst = Activator.CreateInstance(t)!;
+                t.GetMethod("Run")!.Invoke(inst, null);
+                var got = (string)t.GetProperty("Log")!.GetValue(inst)!.ToString()!;
+                return new ScenarioResult(got, got == "[pre];locked;finish;");
+            }),
+
+        new("S230", "UsingBodyInsert",
+            "在 using 语句体内 Inner() 之前插入 PreInner(), 验证 using 的 Dispose EH 区域内插入正确",
+            "Run() 后 Log == \"[pre];inner;after;\", Disposed == true",
+            "ScenarioTargets/Scenarios/S230_UsingBodyInsert.cs",
+            "ScenarioTargets.Patches.mm/Scenarios/S230_UsingBodyInsertPatch.cs",
+            a =>
+            {
+                var t = a.GetType("MonoModTestTargets.S230_UsingBodyInsert")!;
+                var inst = Activator.CreateInstance(t)!;
+                t.GetMethod("Run")!.Invoke(inst, null);
+                var log = (string)t.GetProperty("Log")!.GetValue(inst)!.ToString()!;
+                var disposed = (bool)t.GetProperty("Disposed")!.GetValue(inst)!;
+                var actual = $"log={log}; disposed={disposed}";
+                return new ScenarioResult(actual, log == "[pre];inner;after;" && disposed);
+            }),
+
+        new("S231", "BeforeRetInsert",
+            "在 First() 之后, ret 指令之前插入 BeforeReturn(), 验证方法末尾插入正确",
+            "Run() 后 Log == \"1;[before-ret];\"",
+            "ScenarioTargets/Scenarios/S231_BeforeRetInsert.cs",
+            "ScenarioTargets.Patches.mm/Scenarios/S231_BeforeRetInsertPatch.cs",
+            a =>
+            {
+                var t = a.GetType("MonoModTestTargets.S231_BeforeRetInsert")!;
+                var inst = Activator.CreateInstance(t)!;
+                t.GetMethod("Run")!.Invoke(inst, null);
+                var got = (string)t.GetProperty("Log")!.GetValue(inst)!.ToString()!;
+                return new ScenarioResult(got, got == "1;[before-ret];");
+            }),
+
+        // --- S232-S237: cross-type / enum / loops / boxed / string-const ---
+
+        new("S232", "CrossTypeMethodInsert",
+            "在 Begin() 与 End() 之间插入 CrossNote(), 该方法内部调用另一类型 S232_CrossTypeHelper 的静态方法",
+            "Run() 后 S232_CrossTypeHelper.SharedLog == \"begin;[mid];end;\"",
+            "ScenarioTargets/Scenarios/S232_CrossTypeInsert.cs",
+            "ScenarioTargets.Patches.mm/Scenarios/S232_CrossTypeInsertPatch.cs",
+            a =>
+            {
+                var t = a.GetType("MonoModTestTargets.S232_CrossTypeInsert")!;
+                var helper = a.GetType("MonoModTestTargets.S232_CrossTypeHelper")!;
+                var sb = (System.Text.StringBuilder)helper.GetProperty("SharedLog")!.GetValue(null)!;
+                sb.Clear();
+                var inst = Activator.CreateInstance(t)!;
+                t.GetMethod("Run")!.Invoke(inst, null);
+                var got = sb.ToString();
+                return new ScenarioResult(got, got == "begin;[mid];end;");
+            }),
+
+        new("S233", "EnumArgumentInsert",
+            "在 Start() 与 Stop() 之间插入 LogLevel(Current), 参数为枚举类型, 从属性加载",
+            "Run() 后 Log == \"[level:Medium];\"",
+            "ScenarioTargets/Scenarios/S233_EnumArgInsert.cs",
+            "ScenarioTargets.Patches.mm/Scenarios/S233_EnumArgInsertPatch.cs",
+            a =>
+            {
+                var t = a.GetType("MonoModTestTargets.S233_EnumArgInsert")!;
+                var inst = Activator.CreateInstance(t)!;
+                t.GetMethod("Run")!.Invoke(inst, null);
+                var got = (string)t.GetProperty("Log")!.GetValue(inst)!.ToString()!;
+                return new ScenarioResult(got, got == "[level:Medium];");
+            }),
+
+        new("S234", "DoWhileLoopInsert",
+            "在 do-while 循环体内 Tick() 之前插入 PreTick(), 每次迭代都执行",
+            "Run(3) 后 Log == \"[pre];T[pre];T[pre];TC\"",
+            "ScenarioTargets/Scenarios/S234_DoWhileInsert.cs",
+            "ScenarioTargets.Patches.mm/Scenarios/S234_DoWhileInsertPatch.cs",
+            a =>
+            {
+                var t = a.GetType("MonoModTestTargets.S234_DoWhileInsert")!;
+                var inst = Activator.CreateInstance(t)!;
+                t.GetMethod("Run")!.Invoke(inst, new object[] { 3 });
+                var got = (string)t.GetProperty("Log")!.GetValue(inst)!.ToString()!;
+                return new ScenarioResult(got, got == "[pre];T[pre];T[pre];TC");
+            }),
+
+        new("S235", "WhileLoopInsert",
+            "在 while 循环体内 Step() 之前插入 PreStep(), 每次迭代都执行",
+            "Run(2) 后 Log == \"[pre];S[pre];SD\"",
+            "ScenarioTargets/Scenarios/S235_WhileInsert.cs",
+            "ScenarioTargets.Patches.mm/Scenarios/S235_WhileInsertPatch.cs",
+            a =>
+            {
+                var t = a.GetType("MonoModTestTargets.S235_WhileInsert")!;
+                var inst = Activator.CreateInstance(t)!;
+                t.GetMethod("Run")!.Invoke(inst, new object[] { 2 });
+                var got = (string)t.GetProperty("Log")!.GetValue(inst)!.ToString()!;
+                return new ScenarioResult(got, got == "[pre];S[pre];SD");
+            }),
+
+        new("S236", "BoxedValueArgInsert",
+            "在 First() 与 Last() 之间插入 LogBoxed(BoxedValue), int 属性值需 box 为 object 后传入",
+            "Run() 后 Log == \"1;[boxed:77];last;\"",
+            "ScenarioTargets/Scenarios/S236_BoxedValueInsert.cs",
+            "ScenarioTargets.Patches.mm/Scenarios/S236_BoxedValueInsertPatch.cs",
+            a =>
+            {
+                var t = a.GetType("MonoModTestTargets.S236_BoxedValueInsert")!;
+                var inst = Activator.CreateInstance(t)!;
+                t.GetMethod("Run")!.Invoke(inst, null);
+                var got = (string)t.GetProperty("Log")!.GetValue(inst)!.ToString()!;
+                return new ScenarioResult(got, got == "1;[boxed:77];last;");
+            }),
+
+        new("S237", "StringConstArgInsert",
+            "在 Alpha() 与 Omega() 之间插入 LogTag(\"mid\"), 参数为字符串常量, 用 ldstr 加载",
+            "Run() 后 Log == \"A;[mid];O;\"",
+            "ScenarioTargets/Scenarios/S237_StringArgInsert.cs",
+            "ScenarioTargets.Patches.mm/Scenarios/S237_StringArgInsertPatch.cs",
+            a =>
+            {
+                var t = a.GetType("MonoModTestTargets.S237_StringArgInsert")!;
+                var inst = Activator.CreateInstance(t)!;
+                t.GetMethod("Run")!.Invoke(inst, null);
+                var got = (string)t.GetProperty("Log")!.GetValue(inst)!.ToString()!;
+                return new ScenarioResult(got, got == "A;[mid];O;");
+            }),
+
+        // --- S238-S243: local func / switch expr / ternary / checked / goto / params ---
+
+        new("S238", "LocalFunctionInsert",
+            "在含局部函数的方法中 Before() 后插入 MidNote(), 验证局部函数的 IL 不受影响",
+            "Run() 后 Log == \"B;[mid];r=25;A;\"",
+            "ScenarioTargets/Scenarios/S238_LocalFuncInsert.cs",
+            "ScenarioTargets.Patches.mm/Scenarios/S238_LocalFuncInsertPatch.cs",
+            a =>
+            {
+                var t = a.GetType("MonoModTestTargets.S238_LocalFuncInsert")!;
+                var inst = Activator.CreateInstance(t)!;
+                t.GetMethod("Run")!.Invoke(inst, null);
+                var got = (string)t.GetProperty("Log")!.GetValue(inst)!.ToString()!;
+                return new ScenarioResult(got, got == "B;[mid];r=25;A;");
+            }),
+
+        new("S239", "SwitchExpressionInsert",
+            "在含 switch 表达式的方法中 Start() 后插入 MidNote(), 验证 switch 表达式 IL 不受影响",
+            "Run() 后 Log == \"S;[mid];label=many;E;\"",
+            "ScenarioTargets/Scenarios/S239_SwitchExprInsert.cs",
+            "ScenarioTargets.Patches.mm/Scenarios/S239_SwitchExprInsertPatch.cs",
+            a =>
+            {
+                var t = a.GetType("MonoModTestTargets.S239_SwitchExprInsert")!;
+                var inst = Activator.CreateInstance(t)!;
+                t.GetMethod("Run")!.Invoke(inst, null);
+                var got = (string)t.GetProperty("Log")!.GetValue(inst)!.ToString()!;
+                return new ScenarioResult(got, got == "S;[mid];label=many;E;");
+            }),
+
+        new("S240", "TernaryExpressionInsert",
+            "在三元表达式结果存入局部变量后, 第二次 Log.Append 之前插入 MidNote(), 验证三元分支栈正确",
+            "Run(true) 后 Log == \"start;[mid];delta=1;\", Run(false) 后 Log == \"start;[mid];delta=-1;\"",
+            "ScenarioTargets/Scenarios/S240_TernaryInsert.cs",
+            "ScenarioTargets.Patches.mm/Scenarios/S240_TernaryInsertPatch.cs",
+            a =>
+            {
+                var t = a.GetType("MonoModTestTargets.S240_TernaryInsert")!;
+                var inst1 = Activator.CreateInstance(t)!;
+                t.GetMethod("Run")!.Invoke(inst1, new object[] { true });
+                var log1 = (string)t.GetProperty("Log")!.GetValue(inst1)!.ToString()!;
+
+                var inst2 = Activator.CreateInstance(t)!;
+                t.GetMethod("Run")!.Invoke(inst2, new object[] { false });
+                var log2 = (string)t.GetProperty("Log")!.GetValue(inst2)!.ToString()!;
+
+                var actual = $"true={log1}; false={log2}";
+                return new ScenarioResult(actual, log1 == "start;[mid];delta=1;" && log2 == "start;[mid];delta=-1;");
+            }),
+
+        new("S241", "CheckedContextInsert",
+            "在 checked 块内 First() 后插入 MidNote(), 验证 checked 算术上下文不受影响",
+            "Run() 后 Log == \"1;[mid];sum=300;last;\"",
+            "ScenarioTargets/Scenarios/S241_CheckedInsert.cs",
+            "ScenarioTargets.Patches.mm/Scenarios/S241_CheckedInsertPatch.cs",
+            a =>
+            {
+                var t = a.GetType("MonoModTestTargets.S241_CheckedInsert")!;
+                var inst = Activator.CreateInstance(t)!;
+                t.GetMethod("Run")!.Invoke(inst, null);
+                var got = (string)t.GetProperty("Log")!.GetValue(inst)!.ToString()!;
+                return new ScenarioResult(got, got == "1;[mid];sum=300;last;");
+            }),
+
+        new("S242", "GotoFlowInsert",
+            "在 goto 控制流方法中 Enter() 后插入 MidNote(), 验证 goto/label 跳转目标未损坏",
+            "Run(3) 后 Log == \"enter;[mid];012exit;\"",
+            "ScenarioTargets/Scenarios/S242_GotoFlowInsert.cs",
+            "ScenarioTargets.Patches.mm/Scenarios/S242_GotoFlowInsertPatch.cs",
+            a =>
+            {
+                var t = a.GetType("MonoModTestTargets.S242_GotoFlowInsert")!;
+                var inst = Activator.CreateInstance(t)!;
+                t.GetMethod("Run")!.Invoke(inst, new object[] { 3 });
+                var got = (string)t.GetProperty("Log")!.GetValue(inst)!.ToString()!;
+                return new ScenarioResult(got, got == "enter;[mid];012exit;");
+            }),
+
+        new("S243", "ParamsArrayInsert",
+            "在含 params 数组方法的方法中 First() 后插入 MidNote(), 验证 params 调用不受影响",
+            "Run() 后 Log == \"1;[mid];r=a-b-c;last;\"",
+            "ScenarioTargets/Scenarios/S243_ParamsArrayInsert.cs",
+            "ScenarioTargets.Patches.mm/Scenarios/S243_ParamsArrayInsertPatch.cs",
+            a =>
+            {
+                var t = a.GetType("MonoModTestTargets.S243_ParamsArrayInsert")!;
+                var inst = Activator.CreateInstance(t)!;
+                t.GetMethod("Run")!.Invoke(inst, null);
+                var got = (string)t.GetProperty("Log")!.GetValue(inst)!.ToString()!;
+                return new ScenarioResult(got, got == "1;[mid];r=a-b-c;last;");
+            }),
+
+        // --- S244-S250: nullable / ref struct / exception filter / nested try / recursive / static / index ---
+
+        new("S244", "NullableReturnInsert",
+            "在含 nullable 返回值的方法中 First() 后插入 MidNote(), 验证 nullable 调用不受影响",
+            "Run() 后 Log == \"1;[mid];name=name;last;\"",
+            "ScenarioTargets/Scenarios/S244_NullableReturnInsert.cs",
+            "ScenarioTargets.Patches.mm/Scenarios/S244_NullableReturnInsertPatch.cs",
+            a =>
+            {
+                var t = a.GetType("MonoModTestTargets.S244_NullableReturnInsert")!;
+                var inst = Activator.CreateInstance(t)!;
+                t.GetMethod("Run")!.Invoke(inst, null);
+                var got = (string)t.GetProperty("Log")!.GetValue(inst)!.ToString()!;
+                return new ScenarioResult(got, got == "1;[mid];name=name;last;");
+            }),
+
+        new("S245", "RefStructParamInsert",
+            "在含 ref struct (Span<int>) 参数方法的方法中 First() 后插入 MidNote(), 验证 Span 调用不受影响",
+            "Run() 后 Log == \"1;[mid];sum=6;last;\"",
+            "ScenarioTargets/Scenarios/S245_RefStructInsert.cs",
+            "ScenarioTargets.Patches.mm/Scenarios/S245_RefStructInsertPatch.cs",
+            a =>
+            {
+                var t = a.GetType("MonoModTestTargets.S245_RefStructInsert")!;
+                var inst = Activator.CreateInstance(t)!;
+                t.GetMethod("Run")!.Invoke(inst, null);
+                var got = (string)t.GetProperty("Log")!.GetValue(inst)!.ToString()!;
+                return new ScenarioResult(got, got == "1;[mid];sum=6;last;");
+            }),
+
+        new("S246", "ExceptionFilterInsert",
+            "在带 when 过滤器的 catch 块中 HandleError() 之前插入 PreHandle(), 验证 filter EH 区域内插入正确",
+            "SafeExec() 后 Log == \"[pre];handled;\"",
+            "ScenarioTargets/Scenarios/S246_ExceptionFilterInsert.cs",
+            "ScenarioTargets.Patches.mm/Scenarios/S246_ExceptionFilterInsertPatch.cs",
+            a =>
+            {
+                var t = a.GetType("MonoModTestTargets.S246_ExceptionFilterInsert")!;
+                var inst = Activator.CreateInstance(t)!;
+                t.GetMethod("SafeExec")!.Invoke(inst, null);
+                var got = (string)t.GetProperty("Log")!.GetValue(inst)!.ToString()!;
+                return new ScenarioResult(got, got == "[pre];handled;");
+            }),
+
+        new("S247", "NestedTryInTryInsert",
+            "在外层 try 中 StepA() 后, 内层 try 之前插入 MidNote(), 验证嵌套 try EH 区域正确",
+            "Run() 后 Log == \"A;[mid];B;\"",
+            "ScenarioTargets/Scenarios/S247_NestedTryInTryInsert.cs",
+            "ScenarioTargets.Patches.mm/Scenarios/S247_NestedTryInTryInsertPatch.cs",
+            a =>
+            {
+                var t = a.GetType("MonoModTestTargets.S247_NestedTryInTryInsert")!;
+                var inst = Activator.CreateInstance(t)!;
+                t.GetMethod("Run")!.Invoke(inst, null);
+                var got = (string)t.GetProperty("Log")!.GetValue(inst)!.ToString()!;
+                return new ScenarioResult(got, got == "A;[mid];B;");
+            }),
+
+        new("S248", "RecursiveMethodInsert",
+            "在递归方法中, 递归调用 Factorial() 之前插入 PreRecurse(), 验证递归调用锚点正确",
+            "Factorial(3) 后 Log == \"f3;[pre];f2;[pre];f1;[pre];base;\"",
+            "ScenarioTargets/Scenarios/S248_RecursiveInsert.cs",
+            "ScenarioTargets.Patches.mm/Scenarios/S248_RecursiveInsertPatch.cs",
+            a =>
+            {
+                var t = a.GetType("MonoModTestTargets.S248_RecursiveInsert")!;
+                var inst = Activator.CreateInstance(t)!;
+                var sb = (System.Text.StringBuilder)t.GetProperty("Log")!.GetValue(inst)!;
+                sb.Clear();
+                var result = (int)t.GetMethod("Factorial")!.Invoke(inst, new object[] { 3 })!;
+                var got = sb.ToString();
+                var actual = $"result={result}; log={got}";
+                return new ScenarioResult(actual, result == 6 && got == "f3;[pre];f2;[pre];base;");
+            }),
+
+        new("S249", "StaticMethodContextInsert",
+            "在静态方法 Init() 中 Append(\"init;\") 之后, set_Tag 之前插入静态 MidNote(), 验证静态方法间插入正确",
+            "Init() 后 Log == \"init;[mid];\", Tag == \"ready\"",
+            "ScenarioTargets/Scenarios/S249_StaticCtorContext.cs",
+            "ScenarioTargets.Patches.mm/Scenarios/S249_StaticCtorContextPatch.cs",
+            a =>
+            {
+                var t = a.GetType("MonoModTestTargets.S249_StaticCtorContext")!;
+                var sb = (System.Text.StringBuilder)t.GetProperty("Log")!.GetValue(null)!;
+                sb.Clear();
+                var tagProp = t.GetProperty("Tag")!;
+                tagProp.SetValue(null, "");
+                t.GetMethod("Init")!.Invoke(null, null);
+                var log = sb.ToString();
+                var tag = (string)tagProp.GetValue(null)!;
+                var actual = $"log={log}; tag={tag}";
+                return new ScenarioResult(actual, log == "init;[mid];" && tag == "ready");
+            }),
+
+        new("S250", "IndexAccessInsert",
+            "在含数组索引访问的方法中 First() 后插入 MidNote(), 验证索引访问 IL 不受影响",
+            "Run() 后 Log == \"1;[mid];val=20;last;\"",
+            "ScenarioTargets/Scenarios/S250_IndexAccessInsert.cs",
+            "ScenarioTargets.Patches.mm/Scenarios/S250_IndexAccessInsertPatch.cs",
+            a =>
+            {
+                var t = a.GetType("MonoModTestTargets.S250_IndexAccessInsert")!;
+                var inst = Activator.CreateInstance(t)!;
+                t.GetMethod("Run")!.Invoke(inst, null);
+                var got = (string)t.GetProperty("Log")!.GetValue(inst)!.ToString()!;
+                return new ScenarioResult(got, got == "1;[mid];val=20;last;");
+            }),
     };
 
     private static string ReadFile(string relative) =>
