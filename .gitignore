@@ -9,6 +9,8 @@
 # ===== 测试 / 示例运行产物 =====
 tests/artifacts/
 examples/MonoModPatchDllExample/artifacts/
+# 分类器测试运行时生成的失败报告
+tests/DiffClassifier.Tests/classifier-test-report.md
 
 # ===== IDE / 编辑器 =====
 .vs/

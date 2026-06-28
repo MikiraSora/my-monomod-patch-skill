@@ -3,4 +3,6 @@
   <Project Path="ScenarioTargets/ScenarioTargets.csproj" />
   <Project Path="TestHarness/TestHarness.csproj" />
   <Project Path="HelperLib/HelperLib.csproj" />
+  <Project Path="DiffClassifier/DiffClassifier.csproj" />
+  <Project Path="DiffClassifier.Tests/DiffClassifier.Tests.csproj" />
 </Solution>

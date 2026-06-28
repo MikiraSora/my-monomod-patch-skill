@@ -18,6 +18,8 @@ Use this skill for MonoMod.Patcher `.mm.dll` projects, not runtime `Hook`, `ILHo
 
 If the user provides a **project git repository + two commits** (`base..head`) and wants the source changes between them reproduced as a patch on an already-compiled target assembly, follow `references/git-diff-workflow.md` instead of starting from scratch. That workflow classifies each diff hunk, maps it to a patch pattern, refuses signature changes (hard limit), and pauses on middle-of-method insertions for the user to choose between IL insertion and copy-whole-body. The steps below still apply as the build/apply/verify tail of that workflow.
 
+The classification logic (diff hunk → category) is implemented as an executable, test-backed program at `tests/DiffClassifier/` (library) + `tests/DiffClassifier.Tests/` (50-case fixture). Run `dotnet run --project tests/DiffClassifier.Tests/DiffClassifier.Tests.csproj` to verify the classifier against the 50 cases in `tests/git-diff-cases.md`. The classifier is line-level + brace-depth heuristic (no Roslyn); it gives low confidence on inherently ambiguous boundaries (expression-internal insertion), which the workflow routes to user decision anyway.
+
 1. Inspect the target assembly before writing patch code.
    - Determine the assembly name, target framework, namespace/type names, method signatures, virtual/override status, constructors, and dependencies.
    - Prefer structured inspection with reflection, `dotnet`, ILSpy/dnlib/Mono.Cecil, or existing project sources when available.
