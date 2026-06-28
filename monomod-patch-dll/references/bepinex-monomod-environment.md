@@ -93,7 +93,7 @@ Keep the generated `refs/Assembly-CSharp.dll` inside the patch project folder (i
 
 > Note: this is the *compile-time* mirror of the base skill's "inspect target metadata" step. The base skill inspects with PEReader/Cecil to *read*; here you additionally need a CLR-loadable copy so MSBuild can *reference*. See `patcher-patterns.md` "Identify The Target".
 
-## Step 4 — Runtime Dependency Deployment (The BepInEx-Specific Killer)
+## Step 4 — Runtime Dependency Resolution (The BepInEx-Specific Killer)
 
 In the BepInEx model, MonoMod injects your patch's new types (non-`patch_` classes, new fields' types, etc.) **into the target assembly** and adds `AssemblyRef`s to the patch's own dependencies. At runtime the game loads the patched target and must resolve those refs — but `BepInEx/monomod/` is a **patch-input directory, not a runtime probe path**. Dependencies that live only in `monomod/` are invisible at runtime.
 
@@ -104,37 +104,203 @@ Read `BepInEx/config/BepInEx.cfg` `[Preloader]` to learn where the patched assem
 | `DumpAssemblies = true` | BepInEx writes the patched assembly to `BepInEx/DumpedAssemblies/<target>/` |
 | `LoadDumpedAssemblies = true` | the game loads the patched assembly **from `DumpedAssemblies/`** instead of memory (enables dnSpy debugging) |
 
-When `LoadDumpedAssemblies = true`, the patched `Assembly-CSharp.dll` in `DumpedAssemblies/<target>/` is the runtime truth, and its `AssemblyRef`s (to your patch's deps) must resolve from a runtime probe path. The runtime probe paths are, in practice:
+When `LoadDumpedAssemblies = true`, the patched `Assembly-CSharp.dll` in `DumpedAssemblies/<target>/` is the runtime truth, and its `AssemblyRef`s (to your patch's deps) must resolve from a runtime probe path. The default runtime probe paths are:
 
 1. `<Game>_Data/Managed/` — Unity's standard assembly-probe folder (always works).
 2. `BepInEx/DumpedAssemblies/<target>/` — alongside the patched assembly (works when `LoadDumpedAssemblies = true`).
 
+`BepInEx/monomod/` is **not** a probe path — it is the patcher's input directory only.
+
 **Symptom (runtime):** `TypeLoadException: Could not load type '<YourPatchNamespace>.<NewType>' from assembly 'Assembly-CSharp…'` at the moment patched code first touches a new type you injected — even though MonoMod's apply log (`[Main] Done.`) reported no error and the patched assembly *contains* the type. The type itself is present; the failure is resolving one of *its* field/parameter types, which lives in a dependency DLL that is not on a probe path.
 
-**Real example (names anonymized).** A patch added a new manager class to `Assembly-CSharp`. That class has fields whose types are defined in a patch-private library `RpcTransport.dll` (`IRpcClient`, `RpcServerListener`, …), and `RpcTransport.dll` itself depends on `WebSocketLib.dll`. The patched `Assembly-CSharp.dll` (in `DumpedAssemblies/<target>/`) correctly contained the new class and correctly `AssemblyRef`'d `RpcTransport` + `PatchContracts`. But only `PatchContracts.dll` had been staged to `DumpedAssemblies/<target>/` (via a `PostBuildEvent`); `RpcTransport.dll` and `WebSocketLib.dll` existed only in `monomod/`. At runtime, JIT-loading the new class tried to resolve `RpcTransport` → not on any probe path → `TypeLoadException`.
+### Recommended fix — a runtime `AssemblyResolve` resolver (single-folder distribution)
 
-**Fix — stage the full transitive dependency closure to a runtime probe path.** For each new type your patch injects, collect every DLL that type's *members* reference, transitively, and copy all of them to `Managed/` and/or `DumpedAssemblies/<target>/`:
+The goal: ship the `.mm.dll` **and its third-party dependency DLLs together in one folder** (`BepInEx/monomod/`), with **nothing** needing to be copied to `Managed/` or `DumpedAssemblies/` at release time. Achieve this by injecting a small resolver into the patched assembly that hooks `AppDomain.CurrentDomain.AssemblyResolve` and serves the patch's own dependencies from `monomod/` (or wherever the resolver resolves its base folder to).
+
+**Why `monomod/`-as-distribution-folder is preferable:** `DumpedAssemblies/` is a BepInEx-generated working directory, not a stable release target — a release package should not depend on files being placed there. `monomod/` is the one folder the user *does* control and *does* populate with the mod, so making it the single dependency source yields a clean one-folder release.
+
+**The resolver must be registered early enough — before the first JIT reference to any dependency.** Two mount-point options, in order of reliability:
+
+| mount point | reliable? | notes |
+|---|---|---|
+| **Explicit patch of the earliest method that first references an injected type** (e.g. patch the game's app-init `Awake`/`initialize*` and call `Register()` before `orig_`) | ✅ **reliable** | `Register()` runs as the first statement of a method that is *itself* the start of the dependency-referencing call chain, so it strictly precedes the first dependency JIT. This is the recommended mount. |
+| `[RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.BeforeSceneLoad)]` | ❌ **not reliable in this form** | See trap below. |
+
+**Trap — `[RuntimeInitializeOnLoadMethod]` does NOT fire on BepInEx-patched assemblies.** Unity scans `RuntimeInitializeOnLoadMethod` attributes over assemblies loaded at *engine* init. BepInEx's Preloader patches and **substitutes** the loaded `Assembly-CSharp` after that scan window; a `RuntimeInitializeOnLoadMethod` method newly injected by the patch is **not** registered and **never runs**. Observed in practice: zero trace of the resolver in `LogOutput.log`, and the `TypeLoadException` fires straight from the game's `Awake` chain. Do **not** use `[RuntimeInitializeOnLoadMethod]` as the sole mount for a BepInEx+MonoMod resolver. (It is also only `BeforeSceneLoad`/`AfterSceneLoad` on Unity 5.x — the earlier `SubsystemRegistration`/`BeforeSplashScreen` values are 2019.3+.)
+
+**Resolver design (generalized):**
+
+- An `internal static` class (a plain new type — **not** `patch_`/`[MonoModPatch]` — so MonoMod copies it verbatim into the target). It hooks `AppDomain.CurrentDomain.AssemblyResolve`.
+- **Whitelist**: the handler resolves *only* the patch's own dependency simple-names; for everything else it returns `null` and defers to the default resolver. This avoids hijacking other mods' assembly resolution and avoids indiscriminately `LoadFrom`-ing arbitrary DLLs in the search folder.
+- **Search directories** (tried in order): ① the resolver's *own* assembly directory (`typeof(Resolver).Assembly.Location` — "based on the patch dll's own folder"); ② `BepInEx/monomod/`, derived via `BepInEx.Paths.BepInExRootPath` (reflect, to avoid a hard compile-time reference to `BepInEx.dll`) with a fallback to `Application.dataPath`-based inference. (Rationale: with `LoadDumpedAssemblies=true`, the patched assembly loads from `DumpedAssemblies/<target>/`, so the resolver's *own* location is **not** `monomod/` — candidate ② is what actually hits the shipped deps.)
+- **Logging via `UnityEngine.Debug.Log`** (BepInEx `UnityLogListening=true` routes it to `LogOutput.log`): log the search dirs at `Register()`, and log every hit / load-failure / not-found per dependency. The log call itself must not throw (wrap in try/catch) — a logging failure must not break the resolution chain.
+- **Idempotent `Register()`** (guarded by a bool), called by the patch's earliest-dependency-reference method **before** its `orig_`.
+
+Skeleton (generalized; net35-compatible — note `Path.Combine` is 2-arg only on net35):
+
+```csharp
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Reflection;
+using UnityEngine;
+
+namespace YourPatch.Bootstrap
+{
+    internal static class DependencyAssemblyResolver
+    {
+        // Only resolve the patch's OWN dependencies (simple names, case-insensitive).
+        private static readonly HashSet<string> OwnDependencies =
+            new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+            {
+                // "YourTransportLib", "YourContractsLib", "ThirdPartyLib", ...
+            };
+
+        private static string[] _searchDirs;
+        private static bool _registered;
+
+        // Called by the patch's earliest method that first references an injected type,
+        // BEFORE its orig_. Idempotent.
+        internal static void Register()
+        {
+            if (_registered) return;
+            _registered = true;
+            _searchDirs = ResolveSearchDirs();
+            Log("Register: handler attached. SearchDirs=[" +
+                (_searchDirs == null ? "<null>" : string.Join(", ", _searchDirs)) + "]");
+            AppDomain.CurrentDomain.AssemblyResolve += ResolveFromLocal;
+        }
+
+        private static Assembly ResolveFromLocal(object sender, ResolveEventArgs e)
+        {
+            var name = new AssemblyName(e.Name).Name;
+            if (!OwnDependencies.Contains(name)) return null;   // defer to default resolver
+
+            var dirs = _searchDirs;
+            if (dirs == null) return null;
+
+            foreach (var dir in dirs)
+            {
+                var path = Path.Combine(dir, name + ".dll");
+                if (File.Exists(path))
+                {
+                    try { var a = Assembly.LoadFrom(path); Log("loaded '" + name + "' from " + path); return a; }
+                    catch (Exception ex) { Log("failed '" + name + "' from " + path + " : " + ex.Message); }
+                }
+            }
+            Log("NOT FOUND '" + name + "' in any search dir");
+            return null;
+        }
+
+        private static string[] ResolveSearchDirs()
+        {
+            var dirs = new List<string>(2);
+            // ① resolver's own assembly directory ("based on the patch dll's own folder").
+            var selfDir = GetOwnAssemblyDir();
+            if (selfDir != null) dirs.Add(selfDir);
+            // ② BepInEx/monomod/ via BepInEx.Paths.BepInExRootPath (reflect), fallback dataPath.
+            var monoDir = GetMonomodDir();
+            if (monoDir != null && !dirs.Contains(monoDir)) dirs.Add(monoDir);
+            return dirs.ToArray();
+        }
+
+        private static string GetOwnAssemblyDir()
+        {
+            try
+            {
+                var loc = typeof(DependencyAssemblyResolver).Assembly.Location;
+                if (!string.IsNullOrEmpty(loc))
+                {
+                    var d = Path.GetDirectoryName(loc);
+                    if (Directory.Exists(d)) return d;
+                }
+            }
+            catch { }
+            return null;
+        }
+
+        private static string GetMonomodDir()
+        {
+            try
+            {
+                var t = Type.GetType("BepInEx.Paths, BepInEx");
+                var p = t != null ? t.GetProperty("BepInExRootPath", BindingFlags.Public | BindingFlags.Static) : null;
+                var root = p != null ? p.GetValue(null, null) as string : null;
+                if (!string.IsNullOrEmpty(root))
+                {
+                    var d = Path.Combine(root, "monomod");   // net35: 2-arg Combine only
+                    if (Directory.Exists(d)) return d;
+                }
+            }
+            catch { }
+            try
+            {
+                // dataPath = <gameRoot>/<Game>_Data; monomod/ = <gameRoot>/BepInEx/monomod
+                return Path.GetFullPath(Path.Combine(
+                    Path.Combine(Path.Combine(Application.dataPath, ".."), "BepInEx"), "monomod"));
+            }
+            catch { return null; }
+        }
+
+        private static void Log(string msg)
+        {
+            try { Debug.Log("[DepResolver] " + msg); } catch { }
+        }
+    }
+}
+```
+
+**The mount patch** (explicit, reliable) — patch the earliest method whose execution first references one of the injected types, and call `Register()` before `orig_`. Identify that method from the runtime stack trace of the `TypeLoadException` (its top frame):
+
+```csharp
+using YourPatch.Bootstrap;
+using MonoMod;
+
+namespace YourPatch
+{
+    [MonoModPatch("global::Game.App.ApplicationRoot")]   // the TypeLoadException's top-frame type
+    internal class ApplicationRootEx : global::Game.App.ApplicationRoot
+    {
+        private extern void orig_initializeFirst();      // the TypeLoadException's top-frame method
+        private void initializeFirst()
+        {
+            DependencyAssemblyResolver.Register();       // MUST precede orig_
+            orig_initializeFirst();
+        }
+    }
+}
+```
+
+**Timing guarantee:** the patched `initializeFirst` body is `Register(); orig_initializeFirst();`. The patch class and `Register()` reference only already-loaded types (mscorlib/System/UnityEngine), so JIT-ing this patched method does **not** itself need the dependencies. `Register()` attaches the handler; only then does `orig_initializeFirst()` run and first touch an injected type → dependency JIT → `AssemblyResolve` fires → resolver serves it from `monomod/`. ✓
+
+**Why you cannot recover the *original* `.mm.dll`'s file path at runtime:** the `.mm.dll` is merged into the patched `Assembly-CSharp` at patch time and no longer exists as a standalone assembly at runtime; the BepInEx-bundled MonoMod does not retain/ expose the mod source path. What the resolver *can* get is (a) the patched assembly's own load directory (candidate ①) and (b) `BepInEx.Paths`-derived `monomod/` (candidate ②). Candidate ② is what makes single-folder (`monomod/`) distribution work.
+
+> This is the BepInEx-model counterpart of the base skill's staging step — but the base skill stages deps for *patch-time* (MonoMod's resolver, in `temp/`), while here you resolve deps for *runtime* (the game's CLR, via an injected `AssemblyResolve` hook reading from `monomod/`). Different audiences, different mechanisms.
+
+### Alternative fix — stage dependencies to a probe path (no resolver)
+
+If you prefer not to inject a resolver, the fallback is to copy the patch's transitive dependency closure to a default probe path. For each new type your patch injects, collect every DLL that type's *members* reference, transitively, and place all of them on a probe path (`Managed/` and/or `DumpedAssemblies/<target>/`):
 
 ```
-patch new type  ─refs→  RpcTransport.dll  ─refs→  WebSocketLib.dll
-                        PatchContracts.dll ─refs→  RpcTransport.dll
+patch new type  ─refs→  YourTransportLib.dll  ─refs→  ThirdPartyLib.dll
+                        YourContractsLib.dll   ─refs→  YourTransportLib.dll
 ```
 
-All four (the patched target's new-type deps) must be on a probe path. `monomod/` does **not** count.
-
-> This is the BepInEx-model counterpart of the base skill's staging step — but the base skill stages deps for *patch-time* (MonoMod's resolver, in `temp/`), while here you stage deps for *runtime* (the game's CLR, in `Managed/` or `DumpedAssemblies/`). They are different audiences and different folders.
-
-**Third-party (non-target) dependencies are the user's responsibility to stage.** If the patch project references a third-party project/DLL that is *not* part of the target assembly's own dependency graph (i.e. code the patch brings in itself — a transport library, a contracts assembly, a util lib, etc.), do **not** assume MonoMod or the build will place it on a runtime probe path. Tell the user which third-party DLLs the patch needs at runtime and let the user copy them to the right place (`<Game>_Data/Managed/` and/or `BepInEx/DumpedAssemblies/<target>/`, per `BepInEx.cfg`). The skill does not write `PostBuildEvent` copy logic for these — the user decides where their third-party DLLs live.
+All of them must be on a probe path; `monomod/` does **not** count. **Downside:** this couples the release to `DumpedAssemblies/` (a working dir) or pollutes `Managed/` with mod files — less clean than the resolver approach for distribution. **Third-party (non-target) dependencies are the user's responsibility to stage** either way: tell the user which DLLs the patch needs and let the user place them; the skill does not write `PostBuildEvent` copy logic for them.
 
 ## Build & Verify Checklist (BepInEx + MonoMod Form)
 
 1. **Reference `BepInEx/core/MonoMod.dll`** (not NuGet `MonoMod.Patcher`) so attribute types match the runtime patcher.
 2. **Reference the real target** from `<Game>_Data/Managed/`. If MSBuild emits `MSB3246` and drops it (Step 3), generate a Cecil round-trip clean ref into `refs/` and point `HintPath` there.
 3. **`<Private>false</Private>`** on every target/Unity/System reference — keep the patch output (`.mm.dll` + `.pdb`) clean per `patcher-patterns.md` "Patch Project Output Cleanliness".
-4. **Output to `BepInEx/monomod/`** (via `OutputPath` or `PostBuildEvent`).
+4. **Output to `BepInEx/monomod/`** (via `OutputPath` or `PostBuildEvent`), and ship the patch's third-party dependency DLLs **alongside** the `.mm.dll` in that same folder.
 5. **Read `BepInEx.cfg`** `[Preloader]` to know whether runtime loads from `DumpedAssemblies/`.
-6. **Tell the user to stage third-party (non-target) dependencies.** Any DLL the patch brings in that is not part of the target's own dependency graph must be copied by the user to a runtime probe path (`Managed/` and/or `DumpedAssemblies/<target>/`); `monomod/` is input-only and not runtime-resolvable.
+6. **If the patch injects new types whose members reference third-party dependencies** (the Step 4 scenario), inject the `AssemblyResolve` resolver (Step 4 "Recommended fix"). Mount it via an **explicit patch of the `TypeLoadException`'s top-frame method** calling `Register()` before `orig_` — **not** `[RuntimeInitializeOnLoadMethod]` (that does not fire on BepInEx-patched assemblies). Whitelist only the patch's own deps; log via `Debug.Log`.
 7. **Run the game** and read `BepInEx/LogOutput.log`:
    - MonoMod apply log should reach `[Main] Done.` with no error — if apply itself fails, that is a *patch-time* problem (signature mismatch, bad `orig_`, ignored-helper call), not this environment's problem.
-   - A `TypeLoadException` on one of your injected types *after* `[Main] Done.` is the Step 4 runtime-deployment failure — a transitive/third-party dep is missing from the probe path; tell the user which DLL to stage.
+   - A `TypeLoadException` on one of your injected types *after* `[Main] Done.` is the Step 4 runtime-resolution failure. Check the resolver's `[DepResolver]` log lines:
+     - **No `[DepResolver]` lines at all** → `Register()` never ran → the mount patch didn't apply, or BepInEx loaded a stale patched DLL (delete `DumpedAssemblies/<target>/Assembly-CSharp.dll` + `UnityEngine.dll` to force a re-patch).
+     - **`Register` line present but `SearchDirs=[...]` wrong/empty** → search-dir derivation failed; inspect the printed dirs and fix candidate ② (`BepInEx.Paths` / `dataPath`).
+     - **`NOT FOUND '<dep>'`** → the dependency DLL is not in any search dir; verify it ships in `monomod/`.
+     - **`loaded '<dep>' from ...`** for each dep → resolver working.
    - Success signal: your patch's own log lines (e.g. a "server started" / "initialized" message from your injected code) appear in `LogOutput.log`.
