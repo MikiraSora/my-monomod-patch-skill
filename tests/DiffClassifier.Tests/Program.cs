@@ -38,7 +38,8 @@ internal static class Program
             }
         }
 
-        File.WriteAllText("classifier-test-report.md", sb.ToString(), new System.Text.UTF8Encoding(false));
+        File.WriteAllText(Path.Combine(AppContext.BaseDirectory, "classifier-test-report.md"),
+            sb.ToString(), new System.Text.UTF8Encoding(false));
         Console.WriteLine($"PASS={pass} FAIL={fail} TOTAL={cases.Count}");
         return fail == 0 ? 0 : 1;
     }
