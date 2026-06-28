@@ -103,4 +103,4 @@ dotnet run --project tests/DiffClassifier.Tests/DiffClassifier.Tests.csproj
 
 ## 许可证
 
-详见仓库 LICENSE（如有）。MonoMod 本身遵循其各自许可证。
+本项目采用 [MIT 许可证](LICENSE)（Copyright © 2026 Mikira Sora）。MonoMod 本身遵循其各自许可证。

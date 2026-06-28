@@ -103,4 +103,4 @@ When the user provides a project git repo + two commits, follow [`references/git
 
 ## License
 
-See the repository LICENSE if present. MonoMod itself is governed by its own license.
+This project is licensed under the [MIT License](LICENSE) (Copyright © 2026 Mikira Sora). MonoMod itself is governed by its own license.
