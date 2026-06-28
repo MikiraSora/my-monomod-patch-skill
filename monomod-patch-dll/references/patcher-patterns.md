@@ -148,6 +148,41 @@ internal class patch_Thing : Thing
 - Keep `MonoMod.Patcher` private to the patch project unless the user's packaging requires otherwise.
 - Use `AppendTargetFrameworkToOutputPath=false` only when a flat build output simplifies staging; otherwise copy from the TFM output directory explicitly.
 
+## Patch Project Output Cleanliness (default)
+
+Unless the user explicitly says otherwise, the patch project's build output directory must contain **only the patch `.mm.dll` itself** (plus its own `.pdb`). It must NOT include:
+
+- the target assembly being patched (`Target.dll` / `Assembly-CSharp.dll` / ...),
+- the game's Unity runtime DLLs (`UnityEngine.*.dll`, `Unity.*.dll`, ...),
+- framework / BCL DLLs (`System.*.dll`, `mscorlib.*`, ...),
+- the patcher's own tooling DLLs (`MonoMod.*.dll`, `Mono.Cecil.*.dll`, `MonoMod.Patcher.exe`).
+
+**Rationale:** the `.mm.dll` is consumed by MonoMod.Patcher — a tool that brings its own Cecil/MonoMod. At patch-time the patch's code is merged into the target; the `.mm.dll` never runs side-by-side with its own deps inside the game. Dumping target/Unity/System/MonoMod DLLs into the output pollutes it, risks redistributing binaries you do not own, and can confuse the patcher's dependency resolver.
+
+**Default mechanism** — put this in the patch `.csproj`:
+
+```xml
+<PropertyGroup>
+  <!-- do not copy PackageReference transitive deps (MonoMod.Patcher, Mono.Cecil, System.ValueTuple, ...) -->
+  <CopyLocalLockFileAssemblies>false</CopyLocalLockFileAssemblies>
+</PropertyGroup>
+
+<!-- every Reference to the target / Unity / System / game-runtime DLL: -->
+<Reference Include="...">
+  <HintPath>...</HintPath>
+  <Private>false</Private>   <!-- CopyLocal=false: do not copy into output -->
+</Reference>
+
+<PackageReference Include="MonoMod.Patcher" Version="25.0.1" PrivateAssets="all" />
+```
+
+Result: `bin/.../TargetAssembly.PatchName.mm.dll` (+ `.pdb`) — nothing else.
+
+**Carve-out (opt-in only):** only if the user asks, or a patch genuinely bundles a third-party dependency it must ship alongside (rare — patches normally reuse the target's own dependencies, resolved from the staging dir at patch-time), set `<Private>true</Private>` (CopyLocal) on that single reference to include it. The four excluded categories above stay excluded unless the user explicitly overrides.
+
+**In-process test harness exception:** an in-process harness that runs `MonoModder` itself needs Cecil/MonoMod staged — source those from the NuGet package cache or a dedicated tools directory, not from the patch project output. Do not flip `CopyLocalLockFileAssemblies=true` on the distributable patch project just to feed a harness; keep the patch output clean and let the harness stage its own tooling.
+
+
 ## Applying Patches
 
 MonoMod.Patcher CLI behavior:

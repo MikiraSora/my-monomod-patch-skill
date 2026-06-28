@@ -103,7 +103,8 @@ Use a patch project shape like this, adapted to the target TFM:
     <TargetFramework>net8.0</TargetFramework>
     <AssemblyName>TargetAssembly.PatchName.mm</AssemblyName>
     <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
-    <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
+    <!-- 默认输出整洁: 仅产出 patch .mm.dll 自身, 不拷贝 MonoMod*/Mono.Cecil*/System* 等传递依赖 -->
+    <CopyLocalLockFileAssemblies>false</CopyLocalLockFileAssemblies>
   </PropertyGroup>
 
   <ItemGroup>
@@ -117,6 +118,8 @@ Use a patch project shape like this, adapted to the target TFM:
 ```
 
 Match the target assembly framework when practical. For Unity/old .NET Framework targets, prefer the target's framework profile over modern `net8.0`.
+
+**Output cleanliness (default):** unless the user says otherwise, the build output must contain only `TargetAssembly.PatchName.mm.dll` (+ `.pdb`) — not the target DLL, not Unity runtime DLLs, not `System.*.dll`, not `MonoMod.*`/`Mono.Cecil.*` tooling DLLs. `CopyLocalLockFileAssemblies=false` plus `<Private>false</Private>` on every target/Unity/System reference achieves this. See `references/patcher-patterns.md` "Patch Project Output Cleanliness" for the full rule and the opt-in carve-out.
 
 ## Verification
 
