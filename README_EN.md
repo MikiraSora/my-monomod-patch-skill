@@ -67,7 +67,8 @@ monomod-patch-dll/          # skill definition
 ├── references/
 │   ├── patcher-patterns.md # patch-project patterns, output cleanliness/isolation rules
 │   ├── modifier-recipes.md # modifier recipes + precise IL insertion
-│   └── git-diff-workflow.md# patch-from-git-diff workflow
+│   ├── git-diff-workflow.md# patch-from-git-diff workflow
+│   └── bepinex-monomod-environment.md # BepInEx+MonoMod form detection & specialized environment (ref round-trip, runtime transitive-dep staging)
 └── scripts/                # reserved: deterministic scaffolding/validation scripts
 
 tests/                      # executable test suite

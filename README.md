@@ -67,7 +67,8 @@ monomod-patch-dll/          # skill 定义
 ├── references/
 │   ├── patcher-patterns.md # 补丁项目模式、产物整洁性/隔离规则
 │   ├── modifier-recipes.md # 修饰符配方 + 精确 IL 插入
-│   └── git-diff-workflow.md# 从 git diff 生成补丁的工作流
+│   ├── git-diff-workflow.md# 从 git diff 生成补丁的工作流
+│   └── bepinex-monomod-environment.md # BepInEx+MonoMod 形态识别与特化环境（引用 round-trip、运行期传递依赖部署）
 └── scripts/                # 预留：确定性脚手架/校验脚本
 
 tests/                      # 可执行测试套件
