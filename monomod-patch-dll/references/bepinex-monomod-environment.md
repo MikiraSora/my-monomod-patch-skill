@@ -12,16 +12,22 @@ Treat the patch project as BepInEx+MonoMod if **any** of these hold (the more th
 |---|---|---|
 | `<Reference Include="MonoMod">` with `<HintPath>` pointing at `BepInEx/core/MonoMod.dll` | patch `.csproj` | references the MonoMod **bundled with BepInEx**, not a NuGet `MonoMod.Patcher` |
 | `<OutputPath>` ends in `BepInEx/monomod/` (or a `PostBuildEvent` copies there) | patch `.csproj` | build output is consumed as a BepInEx mod input |
-| old-style non-SDK csproj with `<TargetFrameworkVersion>v3.5</TargetFrameworkVersion>` (or `v4.x`) | patch `.csproj` | Unity-era Mono CLR 2.0/3.5 target, classic MSBuild |
 | a `BepInEx/` folder with `core/`, `monomod/`, `config/BepInEx.cfg`, and optionally `DumpedAssemblies/` | game install dir | the runtime environment |
 | other `Assembly-CSharp.*.mm.dll` files already in `BepInEx/monomod/` | `BepInEx/monomod/` | confirms the monomod-loader pipeline is in use |
 | target assembly lives in `<Game>_Data/Managed/` | game install dir | Unity Managed folder — the runtime assembly-probe path |
 
 If the project references `MonoMod.Patcher` as a NuGet `PackageReference`, outputs to `bin/`, and is applied by you offline, this is **not** the BepInEx form — use the base skill workflow and `patcher-patterns.md` instead.
 
-## Step 2 — Ask The User For The BepInEx Folder
+**Detection does not authorize you to switch modes autonomously.** The signals above are *corroborating hints*, not proof — a `.csproj` can reference `BepInEx/core/MonoMod.dll` for unrelated reasons, and an old `BepInEx/` folder may be a leftover from a previous setup. Once one or more signals hold, **stop and ask the user to confirm** that this patch project is genuinely a BepInEx + MonoMod deployment (`.mm.dll` consumed by BepInEx's MonoMod.Loader at game launch). Do **not** infer the answer, do **not** proceed on the signals alone, and do **not** silently switch from the base workflow into this one. Only after the user explicitly confirms do you treat the project as BepInEx + MonoMod.
 
-Before writing or editing patch code, **ask the user** whether they can provide the path to the game's `BepInEx/` folder (or the game install root that contains it). This is required for this form — you cannot correctly wire compile-time references or staging without it, because the patch must match the exact MonoMod version the game loads.
+## Step 2 — Confirm The Environment With The User And Ask For The BepInEx Folder
+
+Before writing or editing patch code, do two things in the same turn:
+
+1. **Confirm the environment.** Ask the user whether this is really a BepInEx + MonoMod setup (BepInEx applies the `.mm.dll` at game launch via its MonoMod.Loader), as opposed to offline `MonoMod.Patcher` patching. Do not assume — wait for explicit confirmation.
+2. **Ask for the BepInEx path.** Whether they can provide the path to the game's `BepInEx/` folder (or the game install root that contains it). This is required for this form — you cannot correctly wire compile-time references or staging without it, because the patch must match the exact MonoMod version the game loads.
+
+If the user declines or is unsure, do **not** guess or fall back to a NuGet `MonoMod.Patcher` to "make it work" — stay paused and let the user decide.
 
 Concretely, from the BepInEx folder you extract:
 
