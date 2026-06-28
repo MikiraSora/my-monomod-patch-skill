@@ -121,12 +121,21 @@ Match the target assembly framework when practical. For Unity/old .NET Framework
 
 **Output cleanliness (default):** unless the user says otherwise, the build output must contain only `TargetAssembly.PatchName.mm.dll` (+ `.pdb`) — not the target DLL, not Unity runtime DLLs, not `System.*.dll`, not `MonoMod.*`/`Mono.Cecil.*` tooling DLLs. `CopyLocalLockFileAssemblies=false` plus `<Private>false</Private>` on every target/Unity/System reference achieves this. See `references/patcher-patterns.md` "Patch Project Output Cleanliness" for the full rule and the opt-in carve-out.
 
+**Process artifacts isolation (default):** anything produced *during* building/testing/inspecting/applying that is NOT part of the patch project's own source — helper tool projects (IL inspectors, in-process patcher harnesses), IL dumps, staging copies of the target + game DLLs, the applied `*_modded.dll`, throwaway scripts, downloaded dependencies — must live in a **separate `temp/` (or sibling) directory outside the patch project folder**, never mixed into the patch project folder, and never wired into the patch `.csproj`.
+
+Two failure modes this prevents, both hit in practice:
+
+- **Folder pollution:** copying the whole game `Managed/` (Unity runtime DLLs, the target DLL, dozens of `UnityEngine.*.dll`) into the patch project folder to stage patching dumps binaries you do not own next to your source and obscures what is actually yours. Stage in `temp/` instead.
+- **Reference hijack via assembly unification:** placing a *tool* sub-project (e.g. an IL-inspector or patcher harness built against NuGet `Mono.Cecil 0.11.6` / `MonoMod.Utils 25.0.12`) **inside** the patch project tree lets MSBuild assembly unification resolve the patch project's `<Reference HintPath="...\Mono.Cecil.dll">` to the tool's higher-version `bin/` copy instead of the intended HintPath. The `.mm.dll` then silently references the wrong Cecil/MonoMod version and breaks at patch-time. Keep tool projects in a sibling directory (e.g. `..\tools\`), not under the patch project root. If a tool must share the tree, exclude it from the patch build (`<Compile Remove="tools\**\*.cs" />`) AND verify the `.mm.dll` `AssemblyRef` table afterwards — exclusion alone does not stop unification from seeing the tool's `bin/`.
+
+Rule of thumb: after building, the patch project folder should contain only patch source (`.mm.cs`, `MonoModRules.cs`), the `.csproj`, and `bin/`/`obj/` (whose sole non-pdb output is the `.mm.dll`). Everything else goes to `temp/`.
+
 ## Verification
 
 A reliable verification loop is:
 
 1. Build the target and patch project.
-2. Copy the target assembly, patch `.mm.dll`, and required dependencies to a staging directory.
+2. Copy the target assembly, patch `.mm.dll`, and required dependencies to a staging directory **under `temp/`, outside the patch project folder** (see "Process artifacts isolation" above — do not stage game DLLs inside the patch project).
 3. Apply MonoMod.Patcher:
    - Default CLI style: `MonoMod.Patcher.dll Target.dll`
    - Explicit output style: `MonoMod.Patcher.dll Target.dll Target.PatchName.mm.dll Target_modded.dll`

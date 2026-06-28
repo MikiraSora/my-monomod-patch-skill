@@ -182,6 +182,8 @@ Result: `bin/.../TargetAssembly.PatchName.mm.dll` (+ `.pdb`) — nothing else.
 
 **In-process test harness exception:** an in-process harness that runs `MonoModder` itself needs Cecil/MonoMod staged — source those from the NuGet package cache or a dedicated tools directory, not from the patch project output. Do not flip `CopyLocalLockFileAssemblies=true` on the distributable patch project just to feed a harness; keep the patch output clean and let the harness stage its own tooling.
 
+**Process artifacts isolation (default):** the harness project, IL-dump tool, staging copies of the target + game DLLs, and the applied `*_modded.dll` are NOT patch source — they must live in a `temp/` (or sibling) directory **outside the patch project folder**, and must never be wired into the patch `.csproj`. A tool sub-project placed *inside* the patch project tree is especially dangerous: MSBuild assembly unification can resolve the patch's `<Reference HintPath=...>` to the tool's higher-version `bin/` copy (e.g. NuGet `Mono.Cecil 0.11.6` over a BepInEx `0.10.4` HintPath), silently making the `.mm.dll` reference the wrong dependency version. Keep tool projects in a sibling directory. After building, the patch project folder should contain only patch source + `.csproj` + `bin/`/`obj/` (whose sole non-pdb output is the `.mm.dll`); everything else goes to `temp/`. See `SKILL.md` "Process artifacts isolation" for the full rule.
+
 
 ## Applying Patches
 
@@ -205,4 +207,4 @@ mm.AutoPatch();
 mm.Write();
 ```
 
-Add target, patch, and dependency directories to the staging folder before patching.
+Add target, patch, and dependency directories to the staging folder (under `temp/`, outside the patch project folder) before patching.
